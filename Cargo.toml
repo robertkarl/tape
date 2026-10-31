@@ -8,7 +8,10 @@ description = "Local-first, append-only transcript archive for pi / Claude Code 
 # Do not add crates in a feature branch without noting it in your report;
 # keeping Cargo.toml stable is what lets T1/T2 work in parallel worktrees.
 [dependencies]
-age = "0.12.1"
+# age is pinned to 0.11 on purpose: age 0.12 pulls ml-kem 0.2.x, which needs
+# kem =0.3.0-pre.0 and cannot coexist with russh 0.65's ml-kem 0.3.3 (kem ^0.3
+# -> 0.3.0). With age 0.12 the build fails inside ml-kem. Do not bump blindly.
+age = "0.11.5"
 anyhow = "1.0.104"
 axum = "0.8.9"
 blake3 = "1.8.7"

@@ -3,5 +3,5 @@
 
 pub fn serve(addr: &str, port: u16) -> anyhow::Result<()> {
     let _ = (addr, port);
-    anyhow::bail!("not implemented (T5): list + /s/{host}/{id} session pages")
+    anyhow::bail!("not implemented (T5): list + /s/<host>/<id> session pages")
 }
