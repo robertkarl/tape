@@ -34,7 +34,10 @@ pub fn source_roots() -> Vec<(Tool, PathBuf)> {
     vec![
         (Tool::Claude, PathBuf::from(&home).join(".claude/projects")),
         (Tool::Codex, PathBuf::from(&home).join(".codex/sessions")),
-        (Tool::Codex, PathBuf::from(&home).join(".codex/archived_sessions")),
+        (
+            Tool::Codex,
+            PathBuf::from(&home).join(".codex/archived_sessions"),
+        ),
         (Tool::Pi, PathBuf::from(&home).join(".pi/agent/sessions")),
     ]
 }
@@ -56,15 +59,21 @@ pub struct ScanResult {
 /// Keeps the scaffolded `main.rs` contract (`scan() -> Manifest`). The
 /// human-readable per-tool summary is emitted via `tracing::info!` so it lands
 /// on stderr and `tape scan --json` stays pipeable on stdout.
-pub fn scan() -> anyhow::Result<Manifest> {
+/// `scan()` but handing back the anomalies too, so the CLI can print the
+/// summary on stdout instead of relying on the tracing log line.
+pub fn scan_result() -> anyhow::Result<ScanResult> {
     let result = scan_with(&source_roots(), now_ms(), QUIESCENCE_MINUTES)?;
     for a in &result.anomalies {
         tracing::warn!("anomaly: {a}");
     }
+    crate::manifest::write_manifest(&result.manifest, &paths::manifest_path())?;
+    Ok(result)
+}
+
+pub fn scan() -> anyhow::Result<Manifest> {
+    let result = scan_result()?;
     tracing::info!("\n{}", summarize(&result));
-    let manifest = result.manifest;
-    crate::manifest::write_manifest(&manifest, &paths::manifest_path())?;
-    Ok(manifest)
+    Ok(result.manifest)
 }
 
 /// The testable core: roots, "now" (ms since epoch), and the quiescence
@@ -100,15 +109,16 @@ pub fn scan_with(
             }
             let (fe, note) = classify_and_hash(*tool, root, path, quiesce_before_ms)?;
             if let Some(note) = note {
-                anomalies.push(format!("{note} (session_id={}, group={})", fe.session_id, fe.group));
+                anomalies.push(format!(
+                    "{note} (session_id={}, group={})",
+                    fe.session_id, fe.group
+                ));
             }
             entries.push(fe);
         }
     }
 
-    entries.sort_by(|a, b| {
-        (&a.tool, &a.group, &a.path).cmp(&(&b.tool, &b.group, &b.path))
-    });
+    entries.sort_by(|a, b| (&a.tool, &a.group, &a.path).cmp(&(&b.tool, &b.group, &b.path)));
 
     Ok(ScanResult {
         manifest: Manifest {
@@ -131,11 +141,14 @@ fn classify_and_hash(
     path: &Path,
     quiesce_before_ms: i64,
 ) -> anyhow::Result<(FileEntry, Option<String>)> {
-    let meta = std::fs::metadata(path)
-        .with_context(|| format!("stat {}", path.display()))?;
+    let meta = std::fs::metadata(path).with_context(|| format!("stat {}", path.display()))?;
     let mtime_ms = meta
         .modified()
-        .map(|t| t.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0))
+        .map(|t| {
+            t.duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        })
         .unwrap_or(0);
     let quiescent = mtime_ms <= quiesce_before_ms;
 
@@ -176,7 +189,11 @@ fn classify_and_hash(
 /// Anything else is a finding, not something to absorb silently.
 fn classify_claude(root: &Path, path: &Path) -> (String, String, Option<String>) {
     let rel = path.strip_prefix(root).unwrap_or(path);
-    let comps: Vec<&str> = rel.components().map(Component::as_os_str).filter_map(|s| s.to_str()).collect();
+    let comps: Vec<&str> = rel
+        .components()
+        .map(Component::as_os_str)
+        .filter_map(|s| s.to_str())
+        .collect();
     let file_name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let stem = file_name.strip_suffix(".jsonl").unwrap_or(file_name);
 
@@ -187,7 +204,10 @@ fn classify_claude(root: &Path, path: &Path) -> (String, String, Option<String>)
             let note = if looks_like_uuid(&id) {
                 None
             } else {
-                Some(format!("{}: session file stem is not a uuid", path.display()))
+                Some(format!(
+                    "{}: session file stem is not a uuid",
+                    path.display()
+                ))
             };
             (id.clone(), id, note)
         }
@@ -198,7 +218,10 @@ fn classify_claude(root: &Path, path: &Path) -> (String, String, Option<String>)
                 return (
                     stem.to_string(),
                     parent_uuid,
-                    Some(format!("{}: subagents dir is not named for a session uuid", path.display())),
+                    Some(format!(
+                        "{}: subagents dir is not named for a session uuid",
+                        path.display()
+                    )),
                 );
             }
             // An orphaned subagents dir (no sibling <uuid>.jsonl) is a finding.
@@ -245,11 +268,20 @@ fn classify_codex(path: &Path) -> anyhow::Result<(String, String, Option<String>
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let stem = file_name.strip_suffix(".jsonl").unwrap_or(file_name);
     // rollout-<date>T<time>-<uuid>: the uuid is the trailing 36 chars.
-    let tail = stem.chars().rev().take(36).collect::<Vec<_>>().into_iter().rev().collect::<String>();
+    let tail = stem
+        .chars()
+        .rev()
+        .take(36)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
 
     let from_line = first_json_line(path, 16 * 1024 * 1024)?.and_then(|v| {
         if v.get("type").and_then(Value::as_str) == Some("session_meta") {
-            v.pointer("/payload/id").and_then(Value::as_str).map(String::from)
+            v.pointer("/payload/id")
+                .and_then(Value::as_str)
+                .map(String::from)
         } else {
             None
         }
@@ -258,11 +290,17 @@ fn classify_codex(path: &Path) -> anyhow::Result<(String, String, Option<String>
     let (id, note) = match from_line {
         Some(id) => {
             if !looks_like_uuid(&id) {
-                (id, Some(format!("{}: session_meta id is not a uuid", path.display())))
+                (
+                    id,
+                    Some(format!("{}: session_meta id is not a uuid", path.display())),
+                )
             } else if !tail.is_empty() && tail != id {
                 (
                     id.clone(),
-                    Some(format!("{}: filename tail {tail} != session_meta id {id}", path.display())),
+                    Some(format!(
+                        "{}: filename tail {tail} != session_meta id {id}",
+                        path.display()
+                    )),
                 )
             } else {
                 (id, None)
@@ -270,7 +308,10 @@ fn classify_codex(path: &Path) -> anyhow::Result<(String, String, Option<String>
         }
         None => (
             tail,
-            Some(format!("{}: no usable session_meta id; fell back to filename", path.display())),
+            Some(format!(
+                "{}: no usable session_meta id; fell back to filename",
+                path.display()
+            )),
         ),
     };
     Ok((id.clone(), id, note))
@@ -295,7 +336,10 @@ fn classify_pi(path: &Path) -> anyhow::Result<(String, String, Option<String>)> 
         Some(id) => (id, None),
         None => (
             format!("unparsed-{fallback}"),
-            Some(format!("{}: first line is not a pi session header; fell back to filename id8", path.display())),
+            Some(format!(
+                "{}: first line is not a pi session header; fell back to filename id8",
+                path.display()
+            )),
         ),
     };
     Ok((id.clone(), id, note))
@@ -323,8 +367,7 @@ fn first_json_line(path: &Path, max_bytes: usize) -> anyhow::Result<Option<Value
 }
 
 fn hash_file(path: &Path) -> anyhow::Result<String> {
-    let file = File::open(path)
-        .with_context(|| format!("open {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut reader = std::io::BufReader::new(file);
     let mut hasher = blake3::Hasher::new();
     hasher
@@ -341,16 +384,22 @@ fn looks_like_uuid(s: &str) -> bool {
     let is_hex = |c: char| c.is_ascii_hexdigit();
     let hyphen_at = |i: usize| cs[i] == '-';
     let hex_runs = [(0usize, 8), (9, 4), (14, 4), (19, 4), (24, 12)];
-    hyphen_at(8) && hyphen_at(13) && hyphen_at(18) && hyphen_at(23)
-        && hex_runs.iter().all(|(start, len)| {
-            (0..*len).all(|k| is_hex(cs[start + k]))
-        })
+    hyphen_at(8)
+        && hyphen_at(13)
+        && hyphen_at(18)
+        && hyphen_at(23)
+        && hex_runs
+            .iter()
+            .all(|(start, len)| (0..*len).all(|k| is_hex(cs[start + k])))
 }
 
 /// The host this scan ran on. macOS-first (debra): scutil's ComputerName,
 /// falling back to `uname -n`.
 fn hostname() -> String {
-    if let Ok(out) = Command::new("scutil").args(["--get", "ComputerName"]).output() {
+    if let Ok(out) = Command::new("scutil")
+        .args(["--get", "ComputerName"])
+        .output()
+    {
         if out.status.success() {
             let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if !name.is_empty() {
@@ -381,20 +430,26 @@ fn now_ms() -> i64 {
 pub fn summarize(result: &ScanResult) -> String {
     let m = &result.manifest;
     let mut out = String::new();
-    out.push_str(&format!("host: {}  generated: {}\n", m.host, m.generated_at.to_rfc3339()));
+    out.push_str(&format!(
+        "host: {}  generated: {}\n",
+        m.host,
+        m.generated_at.to_rfc3339()
+    ));
 
-    let mut counts: Vec<(Tool, u64, u64)> = vec![
-        (Tool::Pi, 0, 0),
-        (Tool::Claude, 0, 0),
-        (Tool::Codex, 0, 0),
-    ];
+    let mut counts: Vec<(Tool, u64, u64)> =
+        vec![(Tool::Pi, 0, 0), (Tool::Claude, 0, 0), (Tool::Codex, 0, 0)];
     for e in &m.entries {
         let row = counts.iter_mut().find(|(t, ..)| *t == e.tool).unwrap();
         row.1 += 1;
         row.2 += e.size;
     }
     for (tool, n, bytes) in &counts {
-        out.push_str(&format!("{:<6} {:>5} files  {:>12} bytes\n", tool.as_str(), n, bytes));
+        out.push_str(&format!(
+            "{:<6} {:>5} files  {:>12} bytes\n",
+            tool.as_str(),
+            n,
+            bytes
+        ));
     }
 
     let mut with_sub: std::collections::HashSet<&str> = Default::default();
@@ -410,7 +465,9 @@ pub fn summarize(result: &ScanResult) -> String {
         }
     }
     let claude_subagent_groups = with_sub.intersection(&with_main).count();
-    out.push_str(&format!("claude groups with subagents: {claude_subagent_groups}\n"));
+    out.push_str(&format!(
+        "claude groups with subagents: {claude_subagent_groups}\n"
+    ));
 
     let non_quiescent = m.entries.iter().filter(|e| !e.quiescent).count();
     out.push_str(&format!("non-quiescent files: {non_quiescent}\n"));
@@ -427,7 +484,10 @@ pub fn summarize(result: &ScanResult) -> String {
 
 /// True if a Claude entry is a subagent file (<uuid>/subagents/agent-*.jsonl).
 fn is_claude_subagent(path: &Path) -> bool {
-    path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("subagents")
+    path.parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        == Some("subagents")
 }
 
 #[cfg(test)]
@@ -456,9 +516,9 @@ mod tests {
 
     fn pin_mtime(path: &Path, secs: u64) {
         let f = fs::OpenOptions::new().write(true).open(path).unwrap();
-        f.set_times(
-            fs::FileTimes::new().set_modified(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)),
-        )
+        f.set_times(fs::FileTimes::new().set_modified(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs),
+        ))
         .unwrap();
     }
 
@@ -470,17 +530,29 @@ mod tests {
         let root = PathBuf::from(format!("/tmp/tape-t1-unit-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
 
-        let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let now = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         let old = (now - 3600) as u64; // outside the 10-min window
         let recent = (now - 60) as u64; // inside it
 
         // Claude: <enc-cwd>/<uuid>.jsonl + <uuid>/subagents/agent-*.jsonl.
         let cwd_dir = root.join("claude/projects").join("-Users-test-Code-x");
         let main_file = cwd_dir.join(format!("{CLAUDE_UUID}.jsonl"));
-        let sub1 = cwd_dir.join(CLAUDE_UUID).join("subagents").join("agent-a1.jsonl");
-        let sub2 = cwd_dir.join(CLAUDE_UUID).join("subagents").join("agent-a2.jsonl");
+        let sub1 = cwd_dir
+            .join(CLAUDE_UUID)
+            .join("subagents")
+            .join("agent-a1.jsonl");
+        let sub2 = cwd_dir
+            .join(CLAUDE_UUID)
+            .join("subagents")
+            .join("agent-a2.jsonl");
         // An orphaned subagents dir: no sibling <uuid>.jsonl.
-        let orphan = cwd_dir.join(CLAUDE_ORPHAN).join("subagents").join("agent-a3.jsonl");
+        let orphan = cwd_dir
+            .join(CLAUDE_ORPHAN)
+            .join("subagents")
+            .join("agent-a3.jsonl");
         write(&main_file, "{\"type\":\"mode\",\"mode\":\"normal\"}\n");
         write(&sub1, "{\"type\":\"assistant\"}\n");
         write(&sub2, "{\"type\":\"assistant\"}\n");
@@ -489,8 +561,11 @@ mod tests {
         // Codex: good session_meta line, broken first line, zero-byte file.
         let codex_dir = root.join("codex/sessions/2026/03/07");
         let codex_good = codex_dir.join(format!("rollout-2026-03-07T14-40-34-{CODEX_UUID}.jsonl"));
-        let codex_broken_name = codex_dir.join(format!("rollout-2026-03-08T10-00-00-{CLAUDE_UUID}.jsonl"));
-        let codex_empty = root.join("codex/archived_sessions").join("rollout-2026-04-06T18-02-15-broken.jsonl");
+        let codex_broken_name =
+            codex_dir.join(format!("rollout-2026-03-08T10-00-00-{CLAUDE_UUID}.jsonl"));
+        let codex_empty = root
+            .join("codex/archived_sessions")
+            .join("rollout-2026-04-06T18-02-15-broken.jsonl");
         write(
             &codex_good,
             "{\"timestamp\":\"x\",\"type\":\"session_meta\",\"payload\":{\"id\":\"019cca75-aa94-7a50-a97b-8e8e35341ae9\"}}\n",
@@ -502,7 +577,10 @@ mod tests {
         let pi_dir = root.join("pi/sessions/--private-tmp--");
         let pi_good = pi_dir.join("2026-07-22T23-55-18.914Z_57065825.jsonl");
         let inflight = pi_dir.join("2026-10-31T00-00-00.000Z_aaaaaaaa.jsonl");
-        write(&pi_good, &format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{PI_UUID}\"}}\n"));
+        write(
+            &pi_good,
+            &format!("{{\"type\":\"session\",\"version\":3,\"id\":\"{PI_UUID}\"}}\n"),
+        );
         write(
             &inflight,
             "{\"type\":\"session\",\"version\":3,\"id\":\"aaaaaaaa-0000-4000-8000-000000000000\"}\n",
@@ -512,7 +590,16 @@ mod tests {
         // A non-jsonl sibling that must be skipped.
         write(&pi_dir.join("sidecar.txt"), "ignore me");
 
-        let mut old_files = vec![main_file, sub1, sub2, orphan, codex_good, codex_broken_name, codex_empty, pi_good];
+        let mut old_files = vec![
+            main_file,
+            sub1,
+            sub2,
+            orphan,
+            codex_good,
+            codex_broken_name,
+            codex_empty,
+            pi_good,
+        ];
         old_files.sort();
         for p in old_files {
             pin_mtime(&p, old);
@@ -553,11 +640,16 @@ mod tests {
             .manifest
             .entries
             .iter()
-            .filter(|e| e.tool == Tool::Claude && is_claude_subagent(&e.path) && e.group == CLAUDE_UUID)
+            .filter(|e| {
+                e.tool == Tool::Claude && is_claude_subagent(&e.path) && e.group == CLAUDE_UUID
+            })
             .collect();
         assert_eq!(subs.len(), 2, "both subagent files must be found");
         for s in &subs {
-            assert_eq!(s.session_id, CLAUDE_UUID, "subagent carries the parent's session id");
+            assert_eq!(
+                s.session_id, CLAUDE_UUID,
+                "subagent carries the parent's session id"
+            );
             assert_eq!(s.group, main.group, "subagent shares the parent's group");
         }
     }
@@ -573,21 +665,32 @@ mod tests {
         let broken = find(&r, "2026-03-08T10-00-00");
         assert_eq!(broken.session_id, CLAUDE_UUID);
         assert!(
-            r.anomalies.iter().any(|a| a.contains("2026-03-08T10-00-00")),
+            r.anomalies
+                .iter()
+                .any(|a| a.contains("2026-03-08T10-00-00")),
             "the fallback must be reported: {:?}",
             r.anomalies
         );
 
         let pi = find(&r, "57065825");
-        assert_eq!(pi.session_id, PI_UUID, "pi id comes from the session header, not the name");
+        assert_eq!(
+            pi.session_id, PI_UUID,
+            "pi id comes from the session header, not the name"
+        );
         assert_eq!(pi.group, PI_UUID);
     }
 
     #[test]
     fn quiescence_window_marks_recent_files_non_quiescent() {
         let r = scanned();
-        assert!(!find(&r, "aaaaaaaa").quiescent, "touched 60s ago: not quiescent");
-        assert!(find(&r, "57065825").quiescent, "touched an hour ago: quiescent");
+        assert!(
+            !find(&r, "aaaaaaaa").quiescent,
+            "touched 60s ago: not quiescent"
+        );
+        assert!(
+            find(&r, "57065825").quiescent,
+            "touched an hour ago: quiescent"
+        );
         let summary = summarize(&r);
         assert!(summary.contains("non-quiescent files: 1"), "{summary}");
     }
@@ -595,11 +698,23 @@ mod tests {
     #[test]
     fn broken_assumptions_are_reported_and_still_counted() {
         let r = scanned();
-        assert!(r.anomalies.iter().any(|a| a.contains("orphaned subagent")), "{:?}", r.anomalies);
-        assert!(r.anomalies.iter().any(|a| a.contains("zero-byte")), "{:?}", r.anomalies);
+        assert!(
+            r.anomalies.iter().any(|a| a.contains("orphaned subagent")),
+            "{:?}",
+            r.anomalies
+        );
+        assert!(
+            r.anomalies.iter().any(|a| a.contains("zero-byte")),
+            "{:?}",
+            r.anomalies
+        );
         // The orphaned subagent file is still in the manifest, grouped by its dir.
         assert_eq!(
-            r.manifest.entries.iter().filter(|e| e.path.to_string_lossy().contains(CLAUDE_ORPHAN)).count(),
+            r.manifest
+                .entries
+                .iter()
+                .filter(|e| e.path.to_string_lossy().contains(CLAUDE_ORPHAN))
+                .count(),
             1
         );
     }
@@ -607,7 +722,11 @@ mod tests {
     #[test]
     fn only_jsonl_is_scanned_and_hashes_are_blake3_hex() {
         let r = scanned();
-        assert!(r.manifest.entries.iter().all(|e| e.path.extension().unwrap() == "jsonl"));
+        assert!(r
+            .manifest
+            .entries
+            .iter()
+            .all(|e| e.path.extension().unwrap() == "jsonl"));
         for e in &r.manifest.entries {
             assert_eq!(e.blake3.len(), 64);
             assert!(e.blake3.chars().all(|c| c.is_ascii_hexdigit()));

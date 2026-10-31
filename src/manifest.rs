@@ -17,8 +17,7 @@ pub fn write_manifest(m: &Manifest, at: &Path) -> anyhow::Result<()> {
     let parent = at
         .parent()
         .with_context(|| format!("manifest path has no parent: {}", at.display()))?;
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("create dir {}", parent.display()))?;
+    std::fs::create_dir_all(parent).with_context(|| format!("create dir {}", parent.display()))?;
 
     let bytes = serde_json::to_vec_pretty(m).context("serialize manifest")?;
 
@@ -42,8 +41,7 @@ pub fn write_manifest(m: &Manifest, at: &Path) -> anyhow::Result<()> {
 }
 
 pub fn read_manifest(at: &Path) -> anyhow::Result<Manifest> {
-    let bytes = std::fs::read(at)
-        .with_context(|| format!("read manifest {}", at.display()))?;
+    let bytes = std::fs::read(at).with_context(|| format!("read manifest {}", at.display()))?;
     let m: Manifest = serde_json::from_slice(&bytes)
         .with_context(|| format!("parse manifest {}", at.display()))?;
     Ok(m)
@@ -80,8 +78,11 @@ mod tests {
             .unwrap()
             .as_nanos();
         // Scratch stays in /tmp; the house rule is no `rm`, ever.
-        let at = Path::new(&format!("/tmp/tape-t1-manifest-{}-{nanos}", std::process::id()))
-            .join("nested/manifest.json");
+        let at = Path::new(&format!(
+            "/tmp/tape-t1-manifest-{}-{nanos}",
+            std::process::id()
+        ))
+        .join("nested/manifest.json");
 
         let m = sample_manifest();
         write_manifest(&m, &at).unwrap();
@@ -106,6 +107,9 @@ mod tests {
                     .unwrap_or(false)
             })
             .collect();
-        assert!(leftovers.is_empty(), "atomic write left temp debris: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "atomic write left temp debris: {leftovers:?}"
+        );
     }
 }

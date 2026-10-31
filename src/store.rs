@@ -25,7 +25,7 @@ use age::x25519;
 use chrono::Utc;
 
 use crate::scan::QUIESCENCE_MINUTES;
-use crate::types::{BlobRef, FileEntry, Tool};
+use crate::types::{BlobRef, FileEntry};
 
 /// zstd level used for every blob.
 pub const ZSTD_LEVEL: i32 = 12;
@@ -457,60 +457,6 @@ pub fn verify_all(
     })
 }
 
-// ---------------------------------------------------------------------------
-// STOPGAP walker
-// ---------------------------------------------------------------------------
-//
-// T1 owns the real producer (`scan::scan`). This exists only so the crypto
-// layer can be proven end-to-end before that lands: it walks a tree, hashes
-// every .jsonl, and fills FileEntry with a path-shape guess for `tool`.
-// Delete it once `tape store` reads a manifest.
-
-pub fn walk_for_verification(root: &Path) -> anyhow::Result<Vec<FileEntry>> {
-    let mut out = Vec::new();
-    let now = now_ms();
-    for entry in walkdir::WalkDir::new(root) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        let meta = entry.metadata()?;
-        let mtime_ms = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        let bytes = fs::read(path)?;
-        let s = path.to_string_lossy();
-        let tool = if s.contains("/.claude/") {
-            Tool::Claude
-        } else if s.contains("/.codex/") {
-            Tool::Codex
-        } else if s.contains("/.pi/") {
-            Tool::Pi
-        } else {
-            continue;
-        };
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
-        out.push(FileEntry {
-            tool,
-            session_id: stem.clone(),
-            group: stem,
-            path: path.to_path_buf(),
-            size: meta.len(),
-            mtime_ms,
-            blake3: blake3::hash(&bytes).to_hex().to_string(),
-            quiescent: is_quiescent(mtime_ms, now),
-        });
-    }
-    Ok(out)
-}
+// The T2 stopgap file-walker (`walk_for_verification`) lived at the end of this
+// file until T1's `scan::scan` landed. `tape store` now consumes the persisted
+// manifest, so this module does no directory walking of its own at all.

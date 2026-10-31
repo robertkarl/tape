@@ -30,12 +30,9 @@ enum Cmd {
     },
     /// Generate the age keypair (refuses to overwrite an existing identity)
     Keygen,
-    /// zstd+age new blobs into the content-addressed store
+    /// zstd+age new blobs into the content-addressed store (reads the
+    /// manifest written by `tape scan`)
     Store {
-        /// STOPGAP (T2): walk these trees for .jsonl files instead of reading
-        /// a manifest, until T1's `tape scan` lands. Repeatable.
-        #[arg(long = "from-dir")]
-        from_dir: Vec<PathBuf>,
         /// Parallel zstd/age jobs
         #[arg(long, default_value_t = store::default_jobs())]
         jobs: usize,
@@ -82,34 +79,21 @@ fn main() -> anyhow::Result<()> {
 
     match Cli::parse().cmd {
         Cmd::Scan { json } => {
-            let m = scan::scan()?;
+            let result = scan::scan_result()?;
             if json {
-                println!("{}", serde_json::to_string(&m)?);
+                println!("{}", serde_json::to_string(&result.manifest)?);
             } else {
-                println!("{} entries", m.entries.len());
+                println!("{}", scan::summarize(&result));
             }
             Ok(())
         }
         Cmd::Keygen => store::keygen(&paths::identity_path(), &paths::pubkey_path()),
-        Cmd::Store { from_dir, jobs } => {
-            let entries = if from_dir.is_empty() {
-                let m = paths::manifest_path();
-                if !m.exists() {
-                    anyhow::bail!(
-                        "no manifest at {}; run `tape scan` (T1) or pass --from-dir \
-                         (T2 stopgap) ",
-                        m.display()
-                    );
-                }
-                manifest::read_manifest(&m)?.entries
-            } else {
-                let mut all = Vec::new();
-                for dir in &from_dir {
-                    let mut e = store::walk_for_verification(dir)?;
-                    all.append(&mut e);
-                }
-                all
-            };
+        Cmd::Store { jobs } => {
+            let m = paths::manifest_path();
+            if !m.exists() {
+                anyhow::bail!("no manifest at {}; run `tape scan` first", m.display());
+            }
+            let entries = manifest::read_manifest(&m)?.entries;
             println!("{} candidate files", entries.len());
             let report =
                 store::store_all(&entries, &paths::pubkey_path(), &paths::blobs_dir(), jobs)?;
