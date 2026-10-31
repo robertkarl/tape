@@ -16,10 +16,22 @@ pub const QUIESCENCE_MINUTES: u64 = 10;
 pub fn source_roots() -> Vec<(crate::types::Tool, PathBuf)> {
     let home = dirs_home();
     vec![
-        (crate::types::Tool::Claude, PathBuf::from(&home).join(".claude/projects")),
-        (crate::types::Tool::Codex, PathBuf::from(&home).join(".codex/sessions")),
-        (crate::types::Tool::Codex, PathBuf::from(&home).join(".codex/archived_sessions")),
-        (crate::types::Tool::Pi, PathBuf::from(&home).join(".pi/agent/sessions")),
+        (
+            crate::types::Tool::Claude,
+            PathBuf::from(&home).join(".claude/projects"),
+        ),
+        (
+            crate::types::Tool::Codex,
+            PathBuf::from(&home).join(".codex/sessions"),
+        ),
+        (
+            crate::types::Tool::Codex,
+            PathBuf::from(&home).join(".codex/archived_sessions"),
+        ),
+        (
+            crate::types::Tool::Pi,
+            PathBuf::from(&home).join(".pi/agent/sessions"),
+        ),
     ]
 }
 

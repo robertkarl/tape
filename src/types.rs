@@ -11,9 +11,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Which agent tool produced a transcript.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Tool {
+    #[default]
     Pi,
     Claude,
     Codex,

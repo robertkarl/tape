@@ -59,14 +59,21 @@ mtime, blake3). Writes nothing outside `~/.local/share/tapes/`.
 *Done when:* counts match PLAN §2 — 99 Claude top-level sessions / 205 jsonl,
 348 Codex, 291 pi — and Claude subagent dirs group under their parent session.
 
-**T2 — crypto + blob store (PLAN M1).** `tape keygen`, `tape store`,
-`tape verify`. age X25519, zstd level ~12, blob = `store/blobs/<blake3>.tape`,
-write→fsync→rename, `verify` decrypts+decompresses+rehashes every blob.
-*Done when:* `tape verify` = 0 failures over all ~2.4 GB, and a killed-mid-write
-run leaves no unreadable blob.
-**Human-only sub-step:** generating the age identity and backing it up into
-`pass` (`pass insert tapes/identity.age`) is interactive gpg — the human does it.
-Agents generate a *test* keypair in `/tmp` only.
+**T2 — crypto + blob store (PLAN M1). LANDED on branch `t2-store` (2026-10-31).**
+`tape keygen`, `tape store`, `tape verify` are real: age X25519 + zstd-12,
+blobs at `store/blobs/<blake3-of-plaintext>.tape`, write→fsync→rename, no
+delete/rewrite path anywhere, 16-way parallel. 9 tests in `tests/store_tests.rs`.
+Measured: 846 blobs, 2402 MiB → 891 MiB (**2.69×**), `verify` 846/846 ok.
+SIGKILL mid-store → 337 blobs, all readable, rerun filled the remaining 11,
+final verify 348/348.
+Three structural changes T1 must know about: `src/lib.rs` added (crate is now
+lib+bin so `tests/` can link it), `Tool` gained `Default` (`Pi`), and
+`store::walk_for_verification` is an explicit **stopgap** file-lister to delete
+once `tape scan` lands.
+
+**Human-only sub-step (still open):** generating the *production* age identity
+and backing it up into `pass` (`pass insert tapes/identity.age`) is interactive
+gpg — the human does it. Everything above used throwaway keys under /tmp.
 
 **T3 — parsers + index (PLAN M3).** Canonical model, three parsers, SQLCipher
 schema from PLAN §4. Watch the pi timestamp trap: envelope `timestamp` is
@@ -142,6 +149,21 @@ echo 'export CARGO_TARGET_DIR=$HOME/Code/tape-target'   # set in each session
 ```
 
 Ready-to-paste agent briefs: **`prompts/T1.md`**, **`prompts/T2.md`**.
+
+## Build gotchas (learned the hard way)
+
+- **`age` is pinned to 0.11.5, not 0.12.** age 0.12 pulls `ml-kem 0.2.x`, which
+  needs `kem =0.3.0-pre.0` and cannot coexist with russh 0.65's `ml-kem 0.3.3`
+  (`kem ^0.3` → 0.3.0). With age 0.12 the build dies inside `ml-kem`. Comment in
+  `Cargo.toml` says so; do not bump it blind.
+- **An interrupted build leaves a stale relinked binary.** After I killed a
+  build, `target/debug/tape` kept being *relinked from an old artifact* — the
+  CLI silently reverted to the pre-edit stubs while the source was correct.
+  Symptom: `tape store --help` shows no options. Fix: `cargo clean -p tape`.
+  Never trust the binary; check `--help` after a build that was interrupted.
+- Cold dependency build is ~361 crates (russh, axum, bundled sqlcipher): about
+  6 minutes on this machine. Warm rebuilds are seconds. Use the shared
+  `CARGO_TARGET_DIR`.
 
 ## Open items the human still owes
 
