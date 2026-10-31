@@ -116,6 +116,33 @@ Serialize: **T4 alone, human present.** T5 after T3. T6 after T4.
 Fastest useful path: T1+T2 in parallel → T3 → **T4 (this is the milestone that
 ends the data-loss risk)** → T5 → T6.
 
+## Current state of the repo (2026-10-31)
+
+Git repo initialized on `main`. Scaffold committed: workspace `Cargo.toml` with
+the full pre-approved dependency set pinned to current crates.io versions,
+`Cargo.lock` resolved (361 crates — resolution confirms `bundled-sqlcipher` is
+a valid rusqlite feature), all module stubs compiling-shaped with
+`bail!("not implemented (Tx)")`, and `src/types.rs` + `src/paths.rs` as the
+shared contract so parallel branches cannot invent competing types.
+
+**Not yet compile-checked.** The first `cargo check` is a cold build of russh +
+axum + sqlcipher and runs many minutes; it was started and cancelled to avoid
+the wait. Whoever picks up a task should kick it off once, early.
+
+Worktrees (run these, then start one pi session per worktree):
+
+```bash
+cd ~/Code/claude-transcript-archiver
+git worktree add ../tape-wt/t1-scan -b t1-scan
+git worktree add ../tape-wt/t2-store -b t2-store
+# share one build cache across all three checkouts; cargo takes a lock and
+# serializes concurrent builds. Third-party deps build once; the local crate
+# still rebuilds per branch when you switch sessions.
+echo 'export CARGO_TARGET_DIR=$HOME/Code/tape-target'   # set in each session
+```
+
+Ready-to-paste agent briefs: **`prompts/T1.md`**, **`prompts/T2.md`**.
+
 ## Open items the human still owes
 
 - The age keypair generation + `pass` backup (T2, interactive).
