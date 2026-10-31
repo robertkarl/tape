@@ -50,6 +50,10 @@ Built and measured on real transcripts: `scan`, `keygen`, `store`, `verify`,
 Not built: `push`, `serve`, `audit`, and the launchd job that makes the copy
 automatic. See `STATE.md`.
 
+Working scope is deliberately narrow: until the pipeline is proven end to end,
+tape archives **one project's sessions** — whatever `tape scan --only <path>`
+selects — rather than the whole machine. See PLAN §2.1 (decision D9).
+
 ## Build
 
 ```bash

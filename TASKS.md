@@ -15,6 +15,7 @@ work units. Decisions are **locked** — do not re-litigate them in code.
 | D6 | Name | **`tape`** |
 | D7 | Storage | CT 127 on proxmox; data on the **spinning RAIDZ2 pool `tank`** → host path `/tank/tapes`, bind-mounted to `/var/lib/tapes` in the CT |
 | D8 | Scope M0–M2 | **debra only** |
+| D9 | Working subset | **`~/Code/ubdogs` sessions only** (pi + codex today; Claude has none there). Filter at `scan --only`, recorded in the manifest — see PLAN §2.1 |
 
 ## Hard guardrails (every agent, every task)
 

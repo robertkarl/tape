@@ -59,6 +59,40 @@ nightly and logging vanished session IDs.
 
 ---
 
+## 2.1 Working subset (decided 2026-10-31): `~/Code/ubdogs` only
+
+From here on, tape archives a **subset**: sessions whose recorded working
+directory is `~/Code/ubdogs`. Everything else stays on the source machine,
+unarchived, until the subset has been pushed, ingested and browsed.
+
+Measured on debra at decision time:
+
+| tool | how the subset is matched | files | size |
+|---|---|---|---|
+| pi | session dir `--Users-robertkarl-Code-ubdogs--` | 8 | 3.2 MB |
+| codex | first line `session_meta.payload.cwd == /Users/robertkarl/Code/ubdogs` | 2 | — |
+| claude | project dir `-Users-robertkarl-Code-ubdogs` | **0** | — |
+
+**There is no Claude transcript on this machine for that project.** Three
+Claude files *mention* ubdogs as a cwd partway through, but they belong to
+sessions started in `~/Code` and `~/Code/regina`; they are not ubdogs sessions
+and are not in the subset. Expect the subset to be pi + codex until Claude is
+actually used there.
+
+Matching rule, so "the subset" is a fact rather than a vibe: **the working
+directory the tool recorded for the session**, compared exactly, encoded the
+way that tool encodes it in its own directory name. For Codex, whose tree is
+dated rather than slugged, read the first line and compare `payload.cwd`.
+A substring match on the path slug is deliberately *not* used — it would sweep
+in sibling checkouts (`ubdogs-api`) and worktrees.
+
+Mechanism: `tape scan --only <path>` filters at scan time and the filter is
+recorded in the manifest, so `store`, `push`, `ingest` and `audit` all inherit
+it from the manifest instead of re-deciding it. Filtering happens only at scan;
+nothing downstream ever deletes a blob because it fell out of the subset.
+
+---
+
 ## 3. Architecture
 
 One Rust binary, three roles, selected by subcommand. One cargo workspace.
