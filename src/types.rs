@@ -59,6 +59,14 @@ pub struct FileEntry {
 pub struct Manifest {
     pub host: String,
     pub generated_at: DateTime<Utc>,
+    /// Decision D9: the cwd this manifest was *filtered* to, if any. Recorded
+    /// here so `store`, `push`, `ingest` and `audit` inherit the subset from
+    /// the manifest instead of re-deciding it, and so the archive host can
+    /// tell a partial view from a whole machine. `None` = whole machine.
+    ///
+    /// `serde(default)` keeps pre-D9 manifests readable.
+    #[serde(default)]
+    pub only: Option<String>,
     pub entries: Vec<FileEntry>,
 }
 

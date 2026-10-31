@@ -29,6 +29,19 @@ pub fn manifest_path() -> PathBuf {
     tape_home().join("manifest.json")
 }
 
+/// Where manifests pushed from *other* hosts land (and, on the archive host,
+/// where `ingest` finds them): `TAPE_HOME/manifests/<host>.json`.
+pub fn manifests_dir() -> PathBuf {
+    tape_home().join("manifests")
+}
+
+/// Trust-on-first-use host keys for `tape push`. Deliberately separate from
+/// ~/.ssh/known_hosts: tape must not inherit whatever ssh happened to trust,
+/// and must not be surprised by ssh rewriting that file under it.
+pub fn known_hosts_path() -> PathBuf {
+    tape_home().join("known_hosts")
+}
+
 /// Content-addressed blob store: `<store>/blobs/<blake3>.tape`.
 pub fn store_dir() -> PathBuf {
     tape_home().join("store")

@@ -234,6 +234,24 @@ laptop; the archive host needs no inbound SSH to anyone and, after setup, no
 egress at all). A `tape pull --from debra` on the CT is a 20-line convenience
 around the same machinery if you prefer the server to be the scheduler. **Decision D2.**
 
+**As built (T4, 2026-10-31).** One SSH connection, one SFTP channel, no exec'd
+`ssh`, no server-side helper. The diff is derived from the archive host's own
+blob directory: blob *names* are content hashes, so `readdir` is the
+"what do you already have" reply. Uploads go to
+`<hash>.tape.tmp-<pid>` and are renamed into place, then re-statted and
+size-checked; the temp name deliberately does not match `*.tape`, so a crashed
+push leaves inert debris that `ingest` never reads. The manifest is pushed to
+`TAPE_HOME/manifests/<host>.json`, which is what lets several source machines
+share one index and what carries the D9 subset filter to the archive host.
+Host keys are trust-on-first-use in tape's own `TAPE_HOME/known_hosts` (never
+`~/.ssh/known_hosts`), mode 0600, and a *changed* key is a hard refusal.
+
+Two API traps worth remembering: `russh_sftp::SftpSession::write` opens with
+`WRITE` but **not** `CREATE`, so it cannot create a file — the one thing push
+needs; and `russh` maps a `None` hash algorithm for RSA keys to legacy SHA-1
+`ssh-rsa`, which OpenSSH has disabled, so RSA keys must ask for
+`HashAlg::Sha256` explicitly.
+
 ---
 
 ## 8. Deployment (CT 127 on proxmox)

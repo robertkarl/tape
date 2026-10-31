@@ -3,6 +3,7 @@
 //! Write/read the scan manifest, and keep the host-side "already seen" record
 //! so a re-scan only re-hashes what changed.
 
+use std::fs;
 use std::io::Write;
 use std::path::Path;
 
@@ -47,6 +48,60 @@ pub fn read_manifest(at: &Path) -> anyhow::Result<Manifest> {
     Ok(m)
 }
 
+/// Every manifest tape knows about: this host's own `manifest.json` plus the
+/// per-host manifests that `tape push` delivered into `TAPE_HOME/manifests/`.
+///
+/// On the source machine this is normally one file. On the archive host it is
+/// one per source host, which is what keeps a second machine's archive in the
+/// same index without colliding (`blobs.host` / `sessions.host` come from the
+/// manifest, not from the machine running `ingest`).
+///
+/// For a given host, only the newest `generated_at` is kept: an older manifest
+/// for the same host adds nothing that the newer one does not already cover,
+/// and merging both would double-count entries whose hash has since moved on.
+pub fn load_all() -> anyhow::Result<Vec<Manifest>> {
+    load_all_from(&crate::paths::manifest_path(), &crate::paths::manifests_dir())
+}
+
+/// The testable core of `load_all`: both locations are injected.
+pub fn load_all_from(own: &Path, dir: &Path) -> anyhow::Result<Vec<Manifest>> {
+    let mut by_host: std::collections::BTreeMap<String, Manifest> = Default::default();
+
+    if own.exists() {
+        let m = read_manifest(own)?;
+        by_host
+            .entry(m.host.clone())
+            .and_modify(|cur| {
+                if m.generated_at > cur.generated_at {
+                    *cur = m.clone();
+                }
+            })
+            .or_insert(m);
+    }
+
+    if dir.is_dir() {
+        let mut files: Vec<_> = fs::read_dir(&dir)
+            .with_context(|| format!("read dir {}", dir.display()))?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+            .collect();
+        files.sort();
+        for f in files {
+            let m = read_manifest(&f)?;
+            by_host
+                .entry(m.host.clone())
+                .and_modify(|cur| {
+                    if m.generated_at > cur.generated_at {
+                        *cur = m.clone();
+                    }
+                })
+                .or_insert(m);
+        }
+    }
+
+    Ok(by_host.into_values().collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +113,7 @@ mod tests {
         Manifest {
             host: "testhost".into(),
             generated_at: Utc.timestamp_millis_opt(1_793_483_981_000).unwrap(),
+            only: None,
             entries: vec![FileEntry {
                 tool: Tool::Claude,
                 session_id: "6f1d2e10-1111-4aaa-8bbb-0000000000c1".into(),
@@ -111,5 +167,61 @@ mod tests {
             leftovers.is_empty(),
             "atomic write left temp debris: {leftovers:?}"
         );
+    }
+
+    #[test]
+    fn a_pre_d9_manifest_without_the_only_field_still_parses() {
+        // D9 added `only`. Blobs and manifests written before it must stay
+        // readable — the archive is append-only, its metadata has to be too.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let at = Path::new(&format!("/tmp/tape-manifest-oldfmt-{nanos}")).join("manifest.json");
+        fs::create_dir_all(at.parent().unwrap()).unwrap();
+        fs::write(
+            &at,
+            r#"{"host":"oldhost","generated_at":"2026-10-31T00:00:00Z","entries":[]}"#,
+        )
+        .unwrap();
+        let m = read_manifest(&at).unwrap();
+        assert_eq!(m.host, "oldhost");
+        assert_eq!(m.only, None);
+    }
+
+    #[test]
+    fn load_all_keeps_one_manifest_per_host_and_the_newest_wins() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir_str = format!("/tmp/tape-manifest-loadall-{nanos}");
+        let root = Path::new(&dir_str);
+        let own = root.join("manifest.json");
+        let dir = root.join("manifests");
+
+        let mut mine = sample_manifest(); // host "testhost", generated 1793483981000
+        mine.only = Some("/home/me/Code/project".into());
+        write_manifest(&mine, &own).unwrap();
+
+        // A newer manifest for the SAME host (a later scan of this machine,
+        // pushed here) must supersede the local one, not add to it.
+        let mut newer = sample_manifest();
+        newer.generated_at = mine.generated_at + chrono::Duration::seconds(60);
+        write_manifest(&newer, &dir.join("testhost.json")).unwrap();
+
+        // A different host is a different archive, kept side by side.
+        let mut other = sample_manifest();
+        other.host = "otherhost".into();
+        write_manifest(&other, &dir.join("otherhost.json")).unwrap();
+
+        let all = load_all_from(&own, &dir).unwrap();
+        assert_eq!(all.len(), 2, "one per host: {all:?}");
+        let mine_back = all.iter().find(|m| m.host == "testhost").unwrap();
+        assert_eq!(
+            mine_back.generated_at, newer.generated_at,
+            "newest manifest for a host wins"
+        );
+        assert!(all.iter().any(|m| m.host == "otherhost"));
     }
 }

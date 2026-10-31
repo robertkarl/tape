@@ -15,7 +15,7 @@ tape store     zstd + age -> store/blobs/<blake3>.tape
 tape verify    decrypt, re-hash, report
 tape ingest    decrypt blobs -> SQLCipher index (sessions / messages / tool_calls)
 tape stats     per-tool counts, or one read-only query
-tape push      send missing blobs to the archive host over SFTP   (not yet)
+tape push      send missing blobs to the archive host over SFTP
 tape serve     browse UI on the LAN                               (not yet)
 tape audit     diff source vs archive, record vanished sessions   (not yet)
 ```
@@ -47,8 +47,12 @@ Built and measured on real transcripts: `scan`, `keygen`, `store`, `verify`,
 `ingest`, `stats`. 846 blobs from ~2.4 GB of JSONL, 2.69x smaller, 740 sessions,
 93k messages, 55k tool calls, zero parse failures.
 
-Not built: `push`, `serve`, `audit`, and the launchd job that makes the copy
-automatic. See `STATE.md`.
+Built: `push` — one SSH connection, one SFTP channel, the remote blob listing
+*is* the diff, uploads renamed into place, host keys trust-on-first-use in
+tape's own `known_hosts`. Measured end to end against a real OpenSSH server.
+
+Not built: `serve`, `audit`, the archive container itself, and the launchd job
+that makes the copy automatic. See `STATE.md`.
 
 Working scope is deliberately narrow: until the pipeline is proven end to end,
 tape archives **one project's sessions** — whatever `tape scan --only <path>`

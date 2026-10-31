@@ -119,6 +119,7 @@ fn fixture(tag: &str) -> Fixture {
     let m = Manifest {
         host: "testhost".into(),
         generated_at: chrono::Utc::now(),
+        only: None,
         entries,
     };
     manifest::write_manifest(&m, &paths::manifest_path()).unwrap();
@@ -292,6 +293,7 @@ fn an_older_version_never_clobbers_the_newer_projection() {
     let m2 = Manifest {
         host: "testhost".into(),
         generated_at: chrono::Utc::now(),
+        only: None,
         entries: vec![e],
     };
     let r = ingest::ingest(&conn, &m2, &paths::blobs_dir(), &paths::identity_path(), 1).unwrap();
@@ -330,6 +332,7 @@ fn a_missing_blob_is_reported_not_fatal() {
     let m = Manifest {
         host: "testhost".into(),
         generated_at: chrono::Utc::now(),
+        only: None,
         entries: vec![FileEntry {
             tool: Tool::Pi,
             session_id: "ghost".into(),

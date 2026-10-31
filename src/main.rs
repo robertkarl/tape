@@ -28,6 +28,11 @@ enum Cmd {
         /// Emit the manifest as JSON instead of a table
         #[arg(long)]
         json: bool,
+        /// D9: restrict to sessions whose recorded cwd is exactly this path,
+        /// e.g. `--only ~/Code/ubdogs`. The filter is recorded in the manifest,
+        /// so store/push/ingest/audit inherit it.
+        #[arg(long)]
+        only: Option<String>,
     },
     /// Generate the age keypair (refuses to overwrite an existing identity)
     Keygen,
@@ -45,13 +50,26 @@ enum Cmd {
         #[arg(long, default_value_t = store::default_jobs())]
         jobs: usize,
     },
-    /// Push missing blobs to the archive host over sftp
+    /// Push missing blobs to the archive host over sftp (decision D2: the
+    /// source machine pushes; the archive host never pulls)
     Push {
         host: String,
         #[arg(long, default_value_t = 22)]
         port: u16,
         #[arg(long, default_value = "rk")]
         user: String,
+        /// Private key to authenticate with (must be unencrypted; no agent)
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// TAPE_HOME on the archive host
+        #[arg(long, default_value = "/var/lib/tapes")]
+        remote_home: String,
+        /// D9 subset, same as `scan --only`
+        #[arg(long)]
+        only: Option<String>,
+        /// Compute the diff and report it; upload nothing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Archive-host side: decrypt blobs and rebuild the SQLCipher index
     Ingest {
@@ -80,6 +98,13 @@ enum Cmd {
     Audit,
 }
 
+/// The key `tape push` authenticates with when `--key` is not given.
+fn default_ssh_key() -> PathBuf {
+    PathBuf::from(std::env::var("HOME").expect("HOME unset"))
+        .join(".ssh")
+        .join("id_ed25519")
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -89,8 +114,8 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     match Cli::parse().cmd {
-        Cmd::Scan { json } => {
-            let result = scan::scan_result()?;
+        Cmd::Scan { json, only } => {
+            let result = scan::scan_result(only.as_deref())?;
             if json {
                 println!("{}", serde_json::to_string(&result.manifest)?);
             } else {
@@ -149,30 +174,81 @@ fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Cmd::Push { host, port, user } => {
-            let m = scan::scan()?;
-            let r = transport::push(
+        Cmd::Push {
+            host,
+            port,
+            user,
+            key,
+            remote_home,
+            only,
+            dry_run,
+        } => {
+            // A fresh scan is the diff's left-hand side: what the tools hold
+            // right now, under the same subset filter.
+            let m = scan::scan(only.as_deref())?;
+            let key_path = key.unwrap_or_else(default_ssh_key);
+            let remote = transport::Remote {
+                host,
+                port,
+                user,
+                key_path,
+                tape_home: remote_home,
+            };
+            let report = transport::push(
                 &m,
-                &transport::Remote { host, port, user },
+                &remote,
                 &paths::blobs_dir(),
+                &paths::known_hosts_path(),
+                dry_run,
             )?;
-            println!("{r:?}");
+            println!("remote:            {}@{}:{}  {}", remote.user, remote.host, remote.port, remote.tape_home);
+            println!("blobs in manifest: {}", m.entries.iter().filter(|e| e.quiescent).count());
+            println!("already present:   {}", report.already_present);
+            println!("to send:           {}", report.to_send);
+            println!("uploaded:          {}", report.uploaded);
+            println!("uploaded MiB:      {}", report.uploaded_bytes / 1_048_576);
+            println!("verified by size:  {}", report.verified);
+            if let Some(path) = &report.manifest_remote {
+                println!("manifest:          {path}");
+            }
+            if !report.missing_local.is_empty() {
+                println!(
+                    "no local blob for {} entry(ies) (run `tape store`?): {}",
+                    report.missing_local.len(),
+                    report.missing_local.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                );
+            }
+            if !report.failures.is_empty() {
+                println!("failures:          {}", report.failures.len());
+                for f in report.failures.iter().take(10) {
+                    println!("  {f}");
+                }
+                anyhow::bail!("push incomplete; it is resumable — run it again");
+            }
             Ok(())
         }
         Cmd::Ingest { store, jobs } => {
             let blobs = store.unwrap_or_else(paths::blobs_dir);
-            let m = paths::manifest_path();
-            if !m.exists() {
-                anyhow::bail!("no manifest at {}; run `tape scan` first", m.display());
+            let manifests = manifest::load_all()?;
+            if manifests.is_empty() {
+                anyhow::bail!(
+                    "no manifest at {} or {} — run `tape scan` first, or `tape push` to deliver one",
+                    paths::manifest_path().display(),
+                    paths::manifests_dir().display()
+                );
             }
-            let manifest = manifest::read_manifest(&m)?;
             println!(
-                "ingest: {} manifest entries, blobs in {}",
-                manifest.entries.len(),
+                "ingest: {} manifest(s) [{}], blobs in {}",
+                manifests.len(),
+                manifests
+                    .iter()
+                    .map(|m| format!("{}:{}", m.host, m.entries.len()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 blobs.display()
             );
             let conn = db::open_default()?;
-            let r = ingest::ingest(&conn, &manifest, &blobs, &paths::identity_path(), jobs)?;
+            let r = ingest::ingest_all(&conn, &manifests, &blobs, &paths::identity_path(), jobs)?;
             println!("manifest entries:  {}", r.manifest_entries);
             println!("ingested:          {}", r.ingested);
             println!("already indexed:   {}", r.already_indexed);

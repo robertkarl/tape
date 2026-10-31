@@ -14,11 +14,11 @@ pushes must be fast-forward.
 | T1 `scan` | done, merged |
 | T2 `keygen/store/verify` | done, merged |
 | **T3 parsers + SQLCipher index + `ingest`/`stats`** | **done, merged, acceptance met** |
-| **T4 CT 127 + `push`** | **next.** Infra clean and ready; `src/transport.rs` is still a 28-line stub |
+| **T4 CT 127 + `push`** | **code done and measured end to end; the CT itself is not built** |
 | T5 renderer port + `serve` | not started, depends on T3 (unblocked) |
 | T6 launchd + `audit` | not started, depends on T4 |
 
-37 tests pass (23 unit, 5 index integration, 9 store).
+41 tests pass (27 unit, 5 index integration, 9 store).
 
 ## T3 acceptance, measured
 
@@ -56,74 +56,101 @@ before T4 goes live.
 
 ## D9 — the working subset is `~/Code/ubdogs` (decided 2026-10-31)
 
-From now on, archive **only sessions whose recorded cwd is
-`/Users/robertkarl/Code/ubdogs`**. Measured at decision time:
+Implemented: `tape scan --only <path>` / `tape push --only <path>`. The filter
+is **written into the manifest** (`manifest.only`), so `store`, `push`,
+`ingest` and `audit` inherit it instead of re-deciding it, and the archive host
+can tell a subset scan from a whole machine. Matching is per-tool and exact:
+pi by session-dir slug (`--Users-robertkarl-Code-ubdogs--`), Claude by project
+slug (`-Users-robertkarl-Code-ubdogs`), Codex by reading `session_meta.cwd`
+from the file (its tree is dated, not slugged). A Codex file with no readable
+cwd is reported as an anomaly, never silently dropped.
 
-| tool | match | files |
-|---|---|---|
-| pi | dir `~/.pi/agent/sessions/--Users-robertkarl-Code-ubdogs--` | **8** (3.2 MB) |
-| codex | first line `session_meta.payload.cwd == /Users/robertkarl/Code/ubdogs` | **2** |
-| claude | dir `~/.claude/projects/-Users-robertkarl-Code-ubdogs` | **0 — does not exist** |
+Measured against the live machine — matches the hand measurement exactly:
 
-**The user expected Claude transcripts here; there are none.** Three Claude
-files mention ubdogs as a cwd mid-session but belong to sessions started in
-`~/Code` and `~/Code/regina`; they are excluded. Expect pi + codex only until
-Claude is actually used in that project.
+```
+$ tape scan --only ~/Code/ubdogs
+subset (D9): sessions with cwd exactly /Users/robertkarl/Code/ubdogs
+pi         8 files       3368084 bytes
+codex      2 files        272297 bytes
+claude     0 files             0 bytes
+total: 10 files
+```
 
-Mechanism (first step of T4): `tape scan --only <path>` filters at scan time
-and **records the filter in the manifest**, so `store`/`push`/`ingest`/`audit`
-inherit it. Exact match on the tool's own cwd encoding — never a substring of
-the path slug, which would drag in `ubdogs-api` and worktrees. For Codex, read
-line 1 and compare `payload.cwd`. Filtering happens only at scan: nothing
-downstream deletes a blob that falls out of the subset.
+**There is no Claude transcript on this machine for that project.** Three
+Claude files mention ubdogs as a cwd mid-session but belong to sessions started
+in `~/Code` and `~/Code/regina`; they are excluded. Expect pi + codex only
+until Claude is actually used there — which also means the first real push
+exercises **no** Claude subagent-grouping code.
 
-## T4 — what is ready, and what to do in order
+## T4 — code is built and measured; the CT is the remaining half
 
-**Infra: clean slate, verified.**
-- CT 127 is **gone** — Proxmox rolled back the aborted create (`pct config 127`
-  → does not exist, no `subvol-127` dataset). Nothing to clean up.
-- `tank/tapes` exists, mountpoint `/tank/tapes`, 33 T available, owned
-  `100000:100000` so an unprivileged CT can bind-mount it:
-  `--mp0 /tank/tapes,mp=/var/lib/tapes,backup=0`.
-- Template `local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst` present.
-- Rootfs syntax that works: `--rootfs tank-vm-disks:vm-127-disk-0,size=8G`
-  (passing `subvol-127-disk-0` explicitly fails).
-- `local-lvm` is **99.89% full** — never put a rootfs there.
-- House conventions: unprivileged, `ip=dhcp`, `firewall=1` on net0,
-  `features nesting=1`. Agreed sizing: 1024 MB + 2 GB swap + 2 cores for the
-  build, then drop to 512 MB.
+### What was built
 
-**Code gap: `push` does not exist.** `src/transport.rs` =
-`bail!("not implemented (T4): sftp push of missing blobs")`. russh and
-russh-sftp have never moved a byte.
+`src/transport.rs` (push over russh + russh-sftp, in-process),
+`scan --only` (D9), `manifest::load_all` (one manifest per host,
+newest wins), `ingest::ingest_all` (indexes every host's manifest into one
+SQLCipher index), `tape push` CLI (`--key`, `--remote-home`, `--only`,
+`--dry-run`), tape-owned TOFU `known_hosts`.
 
-**Order of work:**
-1. `scan --only <path>` + filter recorded in the manifest (D9).
-2. Implement `push`, then **test it against debra's own sshd**
-   (`127.0.0.1:22`, your `id_ed25519`, a temp target dir). Zero Proxmox
-   mutation; exercises key auth, SFTP, resume-missing-blobs.
-3. Human-present CT session: `pct create 127` → `rk` user + debra's pubkey →
-   `apt install build-essential cmake pkg-config perl` + rust → `git clone
-   https://github.com/robertkarl/tape` (public now, so no scp) → build →
-   `tape keygen` on the CT → push subset blobs → `ingest` → verify →
-   **then** the firewall egress cut (LAN only).
+### Measured end to end against debra's own sshd (loopback, 2026-10-31)
 
-**Design decisions already made for T4 (object if you disagree):**
-- `push` writes straight to `blobs/<hash>.tape` (temp → fsync → rename). Names
-  are content hashes, so staging/quarantine buys nothing; `ingest` re-verifies
-  the hash on decrypt anyway.
-- The **manifest travels with the blobs** — `ingest` needs it for
-  path/tool/session-id ↔ hash, and `manifest.host` is what makes a second
-  machine's archive land in the same index.
-- `tape keygen` **on the CT**: the age identity never leaves it; pubkey goes to
-  debra. `db.key` is generated on the CT at first `ingest`. No `pass` ceremony:
-  this archive is re-importable from the tools' own trees, single user.
-- Auth: debra's existing `~/.ssh/id_ed25519` → `rk` on the CT.
+No Proxmox mutation, real OpenSSH server, real SFTP:
 
-**Risk to budget for:** russh pulls **`aws-lc-sys`**, which builds with CMake —
-the CT needs `cmake` (and `build-essential`, `pkg-config`, `perl`) before
-`cargo build`, and aws-lc + bundled SQLCipher on 2 cores is a **10–20 minute**
-compile, not the 6 minutes it takes on debra.
+| step | result |
+|---|---|
+| `scan --only ~/Code/ubdogs` | pi 8 + codex 2 + claude 0 = 10 files, 3.6 MB |
+| `store` | 10 blobs, **3.68×**, 992 KB, 0 failures |
+| `verify` | 10/10 ok |
+| `push --dry-run` | connects, TOFU-records the host key, `to send: 10` |
+| `push` | 10 blobs landed under `store/blobs/`, manifest at `manifests/debra.json`, **0 temp debris** |
+| `push` again | `already present: 10, to send: 0` — idempotent |
+| remote `ingest` | 10 blobs → 10 sessions, 818 messages, 735 tool calls, host `debra`, 0 parse failures |
+| remote `ingest` again | `ingested: 0, already indexed: 10` |
+| **tamper a remote blob, push again** | blob **not rewritten** (size still shows the injected bytes) |
+| **ingest the tampered store** | `read/decrypt fails: 1 … decryption error`, other 9 index fine, **exit code 1** |
+| **wrong host key in known_hosts** | refused: `host key … does NOT match … The server key changed at line 1` |
+| **client key not in authorized_keys** | `authentication failed … is this public key in its authorized_keys?` |
+
+Reproduce:
+
+```sh
+export TAPE_HOME=/tmp/tape-t4-subset
+tape scan --only ~/Code/ubdogs && tape keygen && tape store && tape verify
+tape push 127.0.0.1 --user robertkarl --key ~/.ssh/id_rsa \
+     --remote-home /tmp/tape-t4-remote --only ~/Code/ubdogs
+cp $TAPE_HOME/identity.age /tmp/tape-t4-remote/   # test only: on the CT the
+                                                  # identity is generated there
+TAPE_HOME=/tmp/tape-t4-remote tape ingest && TAPE_HOME=/tmp/tape-t4-remote tape stats
+```
+
+Note `--key ~/.ssh/id_rsa`: on debra, `id_rsa` is in `authorized_keys` and
+`id_ed25519` is **not**. That only matters for this loopback test — on the CT we
+write its `authorized_keys`, and `tape push` defaults to `id_ed25519`.
+
+### Remaining T4 work: the container (human present)
+
+**Infra is clean and verified:** CT 127 is gone (Proxmox rolled back the aborted
+create — `pct config 127` does not exist, no `subvol-127` dataset). `tank/tapes`
+exists, mountpoint `/tank/tapes`, 33 T available, owned `100000:100000` for an
+unprivileged bind mount (`--mp0 /tank/tapes,mp=/var/lib/tapes,backup=0`).
+Template `local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst`. Rootfs syntax
+that works: `--rootfs tank-vm-disks:vm-127-disk-0,size=8G` (explicit
+`subvol-127-disk-0` fails). `local-lvm` is **99.89% full** — never there.
+Conventions: unprivileged, `ip=dhcp`, `firewall=1` on net0, `features nesting=1`.
+Sizing: 1024 MB + 2 GB swap + 2 cores for the build, then drop to 512 MB.
+
+Session plan: `pct create 127` → `rk` user + debra's pubkey in
+`/home/rk/.ssh/authorized_keys` → `apt install build-essential cmake pkg-config
+perl` + rust → `git clone https://github.com/robertkarl/tape` → build →
+`tape keygen` **inside the CT** (private identity never leaves it) → copy the
+CT's `pubkey.txt` into debra's `TAPE_HOME/pubkey.txt` (debra encrypts *to the
+archive host's key*, so this must happen before the first `tape store`) →
+`tape scan --only … && tape store && tape verify` on debra → `tape push` →
+`tape ingest` + `tape verify` on the CT → **then** cut egress (LAN only).
+
+**Budget for the compile:** russh pulls **`aws-lc-sys`**, which builds with
+CMake; with bundled SQLCipher on 2 cores expect **10–20 minutes**, not the 6
+minutes on debra.
 
 ## Reusable fixtures (all under /tmp, none deleted)
 

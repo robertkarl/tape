@@ -61,8 +61,9 @@ pub struct ScanResult {
 /// on stderr and `tape scan --json` stays pipeable on stdout.
 /// `scan()` but handing back the anomalies too, so the CLI can print the
 /// summary on stdout instead of relying on the tracing log line.
-pub fn scan_result() -> anyhow::Result<ScanResult> {
-    let result = scan_with(&source_roots(), now_ms(), QUIESCENCE_MINUTES)?;
+pub fn scan_result(only: Option<&str>) -> anyhow::Result<ScanResult> {
+    let subset = only.map(Subset::parse).transpose()?;
+    let result = scan_with_subset(&source_roots(), now_ms(), QUIESCENCE_MINUTES, subset.as_ref())?;
     for a in &result.anomalies {
         tracing::warn!("anomaly: {a}");
     }
@@ -70,10 +71,142 @@ pub fn scan_result() -> anyhow::Result<ScanResult> {
     Ok(result)
 }
 
-pub fn scan() -> anyhow::Result<Manifest> {
-    let result = scan_result()?;
+pub fn scan(only: Option<&str>) -> anyhow::Result<Manifest> {
+    let result = scan_result(only)?;
     tracing::info!("\n{}", summarize(&result));
     Ok(result.manifest)
+}
+
+/// Decision D9 — the working subset: sessions whose **recorded working
+/// directory is exactly this path**.
+///
+/// The rule is exact, not a prefix and not a substring of the encoded path, so
+/// a sibling checkout (`ubdogs-api`) or a git worktree of the same project does
+/// not ride along. Each tool encodes the cwd differently, so matching is
+/// per-tool; see `matches`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subset {
+    pub cwd: PathBuf,
+}
+
+/// A file's subset membership. `Unknown` is a finding: we could not read the
+/// cwd the tool recorded, so we cannot prove membership, and the file is
+/// excluded from this scan but reported.
+pub enum InSubset {
+    Yes,
+    No,
+    Unknown(String),
+}
+
+impl Subset {
+    /// Resolve `--only <path>`: expand a leading `~`, require it to exist, and
+    /// canonicalize so the comparison is against one spelling.
+    pub fn parse(raw: &str) -> anyhow::Result<Subset> {
+        let expanded = if raw == "~" {
+            PathBuf::from(dirs_home())
+        } else if let Some(rest) = raw.strip_prefix("~/") {
+            PathBuf::from(dirs_home()).join(rest)
+        } else {
+            PathBuf::from(raw)
+        };
+        anyhow::ensure!(expanded.exists(), "--only: no such path: {raw}");
+        anyhow::ensure!(expanded.is_dir(), "--only: not a directory: {raw}");
+        let cwd = expanded
+            .canonicalize()
+            .with_context(|| format!("--only: canonicalizing {raw}"))?;
+        anyhow::ensure!(cwd.is_dir(), "--only: not a directory: {}", cwd.display());
+        Ok(Subset { cwd })
+    }
+
+    /// The path split into its components joined by '-', which is what both
+    /// pi and Claude use as the middle of their directory names.
+    fn components_slug(&self) -> String {
+        self.cwd
+            .components()
+            .filter_map(|c| match c {
+                Component::Normal(s) => s.to_str(),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("-")
+    }
+
+    /// pi: `/Users/me/Code/p` -> `--Users-me-Code-p--`.
+    pub fn pi_slug(&self) -> String {
+        format!("--{}--", self.components_slug())
+    }
+
+    /// Claude: `/Users/me/Code/p` -> `-Users-me-Code-p`.
+    pub fn claude_slug(&self) -> String {
+        format!("-{}", self.components_slug())
+    }
+
+    /// Does this file belong to the subset?
+    ///
+    /// pi and Claude key their trees by the encoded cwd, so membership is the
+    /// first path component under the root. Codex keys its tree by date, so
+    /// the cwd has to be read out of the file itself.
+    pub fn matches(&self, tool: Tool, root: &Path, path: &Path) -> InSubset {
+        let rel = path.strip_prefix(root).unwrap_or(path);
+        let first = rel
+            .components()
+            .next()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned());
+        match tool {
+            Tool::Pi => match first {
+                Some(c) if c == self.pi_slug() => InSubset::Yes,
+                _ => InSubset::No,
+            },
+            Tool::Claude => match first {
+                Some(c) if c == self.claude_slug() => InSubset::Yes,
+                _ => InSubset::No,
+            },
+            Tool::Codex => match codex_cwd(path) {
+                Some(cwd) => {
+                    if Path::new(&cwd) == self.cwd.as_path() {
+                        InSubset::Yes
+                    } else {
+                        InSubset::No
+                    }
+                }
+                None => InSubset::Unknown(format!(
+                    "subset: no session_meta cwd found in {}, excluded from this scan",
+                    path.display()
+                )),
+            },
+        }
+    }
+}
+
+/// The cwd a Codex session recorded, from its `session_meta` line. Codex puts
+/// sessions in dated directories, so unlike pi/Claude the subset cannot be
+/// decided from the path. Only the first few lines are read.
+fn codex_cwd(path: &Path) -> Option<String> {
+    let file = File::open(path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    for line in reader.lines().take(8) {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("type").and_then(|t| t.as_str()) == Some("session_meta") {
+            if let Some(cwd) = v
+                .get("payload")
+                .and_then(|p| p.get("cwd"))
+                .and_then(|c| c.as_str())
+            {
+                return Some(cwd.to_string());
+            }
+        }
+    }
+    None
 }
 
 /// The testable core: roots, "now" (ms since epoch), and the quiescence
@@ -82,6 +215,15 @@ pub fn scan_with(
     roots: &[(Tool, PathBuf)],
     now_ms: i64,
     quiescence_minutes: u64,
+) -> anyhow::Result<ScanResult> {
+    scan_with_subset(roots, now_ms, quiescence_minutes, None)
+}
+
+pub fn scan_with_subset(
+    roots: &[(Tool, PathBuf)],
+    now_ms: i64,
+    quiescence_minutes: u64,
+    subset: Option<&Subset>,
 ) -> anyhow::Result<ScanResult> {
     let quiesce_before_ms = now_ms - (quiescence_minutes as i64) * 60_000;
     let mut entries: Vec<FileEntry> = Vec::new();
@@ -107,6 +249,18 @@ pub fn scan_with(
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
+            // D9: filter at scan time, once. Nothing downstream re-decides it,
+            // and nothing downstream deletes a blob that fell out of the subset.
+            if let Some(subset) = subset {
+                match subset.matches(*tool, root, path) {
+                    InSubset::Yes => {}
+                    InSubset::No => continue,
+                    InSubset::Unknown(note) => {
+                        anomalies.push(note);
+                        continue;
+                    }
+                }
+            }
             let (fe, note) = classify_and_hash(*tool, root, path, quiesce_before_ms)?;
             if let Some(note) = note {
                 anomalies.push(format!(
@@ -124,6 +278,7 @@ pub fn scan_with(
         manifest: Manifest {
             host: hostname(),
             generated_at: Utc::now(),
+            only: subset.map(|s| s.cwd.to_string_lossy().into_owned()),
             entries,
         },
         anomalies,
@@ -435,6 +590,9 @@ pub fn summarize(result: &ScanResult) -> String {
         m.host,
         m.generated_at.to_rfc3339()
     ));
+    if let Some(only) = &m.only {
+        out.push_str(&format!("subset (D9): sessions with cwd exactly {only}\n"));
+    }
 
     let mut counts: Vec<(Tool, u64, u64)> =
         vec![(Tool::Pi, 0, 0), (Tool::Claude, 0, 0), (Tool::Codex, 0, 0)];
@@ -751,5 +909,83 @@ mod tests {
         ] {
             assert!(s.contains(needle), "summary missing {needle:?}:\n{s}");
         }
+    }
+
+    fn paths_of(r: &ScanResult) -> Vec<String> {
+        r.manifest
+            .entries
+            .iter()
+            .map(|e| e.path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn subset_d9_selects_by_encoded_cwd_exactly_not_by_prefix() {
+        let f = fixtures();
+        // A sibling checkout whose slug merely *starts with* ours must not ride
+        // along — that is the whole reason D9 says "exactly".
+        write(
+            &f.roots[0]
+                .1
+                .join("-Users-test-Code-x-frontend")
+                .join("11111111-1111-4111-8111-0000000000f1.jsonl"),
+            "{\"type\":\"mode\",\"mode\":\"normal\"}\n",
+        );
+
+        let sub = Subset {
+            cwd: PathBuf::from("/Users/test/Code/x"),
+        };
+        assert_eq!(sub.claude_slug(), "-Users-test-Code-x");
+        assert_eq!(sub.pi_slug(), "--Users-test-Code-x--");
+
+        let r = scan_with_subset(&f.roots, f.now_ms, QUIESCENCE_MINUTES, Some(&sub)).unwrap();
+        let paths = paths_of(&r);
+
+        assert!(
+            r.manifest.entries.iter().all(|e| e.tool == Tool::Claude),
+            "pi dir here is --private-tmp-- and codex records no cwd: {paths:?}"
+        );
+        // main + 2 subagents + the orphaned subagent file.
+        assert_eq!(r.manifest.entries.len(), 4, "{paths:?}");
+        assert!(
+            !paths.iter().any(|p| p.contains("x-frontend")),
+            "sibling checkout leaked into the subset: {paths:?}"
+        );
+        assert_eq!(r.manifest.only.as_deref(), Some("/Users/test/Code/x"));
+        // The codex file with no readable cwd is a *finding*, not a silent drop.
+        assert!(
+            r.anomalies.iter().any(|a| a.contains("no session_meta cwd")),
+            "undecidable codex file should be reported: {:?}",
+            r.anomalies
+        );
+    }
+
+    #[test]
+    fn subset_d9_reads_the_cwd_out_of_codex_files() {
+        let f = fixtures();
+        let dir = f.roots[1].1.join("2026/03/09");
+        write(
+            &dir.join("rollout-2026-03-09T00-00-00-019cca75-aa94-7a50-a97b-8e8e35341b00.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"x\",\"cwd\":\"/Users/test/Code/x\"}}\n",
+        );
+        write(
+            &dir.join("rollout-2026-03-09T00-00-00-019cca75-aa94-7a50-a97b-8e8e35341b01.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"y\",\"cwd\":\"/Users/test/Code/other\"}}\n",
+        );
+
+        let sub = Subset {
+            cwd: PathBuf::from("/Users/test/Code/x"),
+        };
+        let r = scan_with_subset(&f.roots, f.now_ms, QUIESCENCE_MINUTES, Some(&sub)).unwrap();
+        let codex: Vec<String> = r
+            .manifest
+            .entries
+            .iter()
+            .filter(|e| e.tool == Tool::Codex)
+            .map(|e| e.path.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(codex.len(), 1, "only the matching cwd: {codex:?}");
+        assert!(codex[0].ends_with("35341b00.jsonl"), "{codex:?}");
     }
 }

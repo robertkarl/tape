@@ -42,6 +42,33 @@ pub struct IngestReport {
 /// How many manifest entries a single batch decrypts+parses at once.
 const BATCH_FACTOR: usize = 4;
 
+/// Ingest every manifest tape knows about — this host's own plus the per-host
+/// manifests that `tape push` delivered. On the archive CT that is one per
+/// source machine, which is what keeps two machines' sessions apart (`host` is
+/// part of the `sessions`/`messages` key).
+pub fn ingest_all(
+    conn: &Connection,
+    manifests: &[Manifest],
+    blobs_dir: &Path,
+    identity_path: &Path,
+    jobs: usize,
+) -> anyhow::Result<IngestReport> {
+    let mut total = IngestReport::default();
+    for m in manifests {
+        let r = ingest(conn, m, blobs_dir, identity_path, jobs)?;
+        total.manifest_entries += r.manifest_entries;
+        total.already_indexed += r.already_indexed;
+        total.missing_blob += r.missing_blob;
+        total.ingested += r.ingested;
+        total.parse_failures += r.parse_failures;
+        total.sessions += r.sessions;
+        total.messages += r.messages;
+        total.tool_calls += r.tool_calls;
+        total.failures.extend(r.failures);
+    }
+    Ok(total)
+}
+
 struct Parsed {
     entry_idx: usize,
     session: Session,
