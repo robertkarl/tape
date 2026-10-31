@@ -132,6 +132,10 @@ export CARGO_TARGET_DIR=$HOME/Code/tape-target
 
 ## Current state of the repo (merged, 2026-10-31)
 
+> **See `STATE.md` for the authoritative snapshot** (measured numbers, Proxmox
+> half-state, reusable blob fixture, API surface, gotchas). This section is the
+> task ledger.
+
 `main` holds scaffold → `t1-scan` → `t2-store` → integration (`cf9055c`).
 Branch labels `t1-scan`/`t2-store` and the T1 worktree were removed after the
 merge; the history lives in the merge commits.
