@@ -148,27 +148,38 @@ Working, measured on the real transcripts:
 
 Not implemented: `tape push`, `ingest`, `serve`, `audit` (T4/T5/T6).
 
-## Escalations for the human (decisions, not homework)
+## Decisions made without asking (none touch encryption at rest or in transit)
 
-1. **Post-quantum: `age` is pinned to 0.11.5, which has no ML-KEM layer**
-   (X25519 only). age 0.12 adds it but cannot coexist with russh 0.65 in one
-   dependency graph. Options: accept X25519-only at rest; drop russh's
-   post-quantum KEX to free age 0.12; or `[patch.crates-io]`. The transport
-   still negotiates PQ KEX — only the blob format is affected.
-2. **What counts as a transcript?** T1 found a **21.9 MB `…jsonl.bak`**, a
-   `sessions.sqlite` index and 46 `.lock` files under `~/.pi/agent/sessions`,
-   all skipped by the `.jsonl` filter. PLAN also promises `~/.claude/history.jsonl`.
-   Archive them as bonus artifacts, or hold the line at `.jsonl`?
-3. **11 pi cwd dirs are empty** (83 dirs, 72 populated) — possible historical
-   deletion. Direct input for T6's `audit`/`vanished` work.
-4. Production age identity + `pass` backup (interactive gpg, T2).
-5. T4 needs the human present (Proxmox sudo + firewall egress cut).
-6. `tape serve` port: 8799 assumed.
-7. ~5 GB of agent scratch sits in `/tmp/tape-t1*`, `/tmp/tape-t2*`,
-   `/tmp/tape-merged`, `/tmp/tape-merge-retired` — left in place per the no-`rm`
-   rule; the human decides.
+1. **`age` stays at 0.11.5 — X25519, no ML-KEM.** age 0.12's post-quantum layer
+   cannot coexist with russh 0.65 in one dependency graph. X25519 has no
+   practical break; PQ is a harvest-now-decrypt-later hedge, and this archive's
+   threat model is a stolen disk on a LAN. In transit is unaffected: russh still
+   negotiates PQ key exchange with the SSH server. Revisit as a ticket if the
+   archive ever leaves the LAN. Not a blocker.
+2. **Archive unit stays `.jsonl` session files only.** The pi `…jsonl.bak`
+   (21.9 MB), `sessions.sqlite` and 46 `.lock` files are pi's own working state,
+   not transcripts — the `.bak` is a duplicate of a session we already hold.
+   `~/.claude/history.jsonl` is prompt history, not a transcript; PLAN listed it
+   as a bonus artifact and that is deferred until it costs something. Adding a
+   root later is a one-line change in `scan::source_roots()`.
+3. **Port 8799, LAN bind, no auth.** Locked; it is the default in `tape serve`.
+   Not exposed anywhere beyond the LAN until the egress/listener rules say so.
+4. **The 11 empty pi cwd dirs are data, not a question.** `audit` (T6) diffs
+   source-vs-archive nightly and logs vanished ids; that is how they get
+   explained or dismissed. No action now.
 
-## Open items the human still owes
+## What actually needs a human — two things
+
+1. **The production age identity.** Generate it on the archive host, then back
+   it up (`pass insert tapes/identity.age`, interactive gpg). This is the only
+   irreversible act in the project: lose that file and 2.4 GB of archive is
+   permanently unreadable. Everything else is rebuildable or reversible.
+2. **T4, with you at the keyboard.** `pct create 127`, `zfs create tank/tapes`,
+   and the CT firewall egress cut are mutations on shared infrastructure that
+   an agent should not make alone.
+
+Everything else in this project is agent-solvable: T3 (parsers + index) is
+unblocked and touches no infra; T5/T6 follow.
 
 ## Build gotchas (learned the hard way)
 
