@@ -1,0 +1,30 @@
+[package]
+name = "tape"
+version = "0.1.0"
+edition = "2021"
+description = "Local-first, append-only transcript archive for pi / Claude Code / Codex"
+
+# Dependency policy: this list is PRE-APPROVED and complete for M0-M4.
+# Do not add crates in a feature branch without noting it in your report;
+# keeping Cargo.toml stable is what lets T1/T2 work in parallel worktrees.
+[dependencies]
+age = "0.12.1"
+anyhow = "1.0.104"
+axum = "0.8.9"
+blake3 = "1.8.7"
+chrono = { version = "0.4.45", features = ["serde"] }
+clap = { version = "4.6.7", features = ["derive"] }
+rusqlite = { version = "0.41.1", features = ["bundled-sqlcipher", "chrono"] }
+russh = "0.65.0"
+russh-sftp = "3.0.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+walkdir = "2.5.0"
+zstd = "0.14.3"
+
+[profile.release]
+opt-level = 2
