@@ -38,9 +38,9 @@ nightly and logging vanished session IDs.
 
 **Infrastructure facts that constrain the design.**
 
-- `debra` = this machine, 192.168.50.69, Tailscale `100.99.204.55`, sshd
+- `debra` = this machine, <debra-lan-ip>, Tailscale `<debra-tailscale-ip>`, sshd
   **listening on :22** (Remote Login on) → the archive host can *pull* from here.
-- `proxmox` = 192.168.50.57, reachable over LAN SSH as `rk` (key auth,
+- `proxmox` = <proxmox-lan-ip>, reachable over LAN SSH as `rk` (key auth,
   passwordless sudo). ZFS pool `tank` has **33 TiB free**. Highest existing CT is
   126 → **CT 127 is free**.
 - Tailscale on debra is the **GUI app only**; the `tailscale` CLI is not on PATH
@@ -54,7 +54,7 @@ nightly and logging vanished session IDs.
 - `age` is **not** installed; `pass` and `gpg` are.
 - House deployment procedure: `~/homelab/docs/ADDING-A-NEW-SERVICE.md`
   (unprivileged Debian 13 LXC, `rk` user + key, Pi-hole DNS, nginx CT 103
-  at 192.168.50.92). We will follow steps 1–2 and **skip** steps 3–4 (DNS +
+  at <nginx-ct-ip>). We will follow steps 1–2 and **skip** steps 3–4 (DNS +
   nginx/HTTPS) — those are exactly the parts SPEC.md puts out of scope.
 
 ---
@@ -64,7 +64,7 @@ nightly and logging vanished session IDs.
 One Rust binary, three roles, selected by subcommand. One cargo workspace.
 
 ```
-  ┌─ debra (Mac Studio, always on) ─────────────┐      ┌─ proxmox .57 ──────────────────┐
+  ┌─ debra (Mac Studio, always on) ─────────────┐      ┌─ proxmox ──────────────────┐
   │ ~/.claude ~/.codex ~/.pi                    │      │ CT 127 "tapes" (Debian 13, no  │
   │        │                                    │ SSH  │ egress after setup)            │
   │  tape collect  ──── manifest + bundles ────►│─────►│  tape ingest  →  store/        │
@@ -202,7 +202,7 @@ around the same machinery if you prefer the server to be the scheduler. **Decisi
 
 ---
 
-## 8. Deployment (CT 127 on proxmox .57)
+## 8. Deployment (CT 127 on proxmox)
 
 Follow `~/homelab/docs/ADDING-A-NEW-SERVICE.md` steps 1–2, skip 3–4:
 
@@ -220,7 +220,7 @@ sudo pct create 127 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
   out, allow only LAN subnets (and the tailnet if used). Install `apt` packages
   and build deps *before* the cut; afterwards the CT is an island.
 - **No** Pi-hole entry, **no** nginx/HTTPS, **no** DNS work.
-- `tape serve` binds `192.168.50.x:8799` (port TBD), reachable from LAN only.
+- `tape serve` binds the LAN address only, port 8799 (locked). No public interface.
 
 **Build/distribution gap to resolve (Decision D1).** The CT is `amd64`; debra is
 `aarch64-apple-darwin`, and no Linux cross toolchain is installed. Options:
@@ -270,5 +270,5 @@ Each milestone is independently useful; M2 alone already ends the data-loss risk
 4. **D4 — index at rest:** SQLCipher
 5. **D5 — transport:** in-process `russh`/`russh-sftp`
 6. **Name:** `tape`
-7. **CT ID 127 on proxmox .57 with `tank/tapes` -- store this on the spinning disks (redundant)
+7. **CT ID 127 on proxmox with `tank/tapes` -- store this on the spinning disks (redundant)
 8. **Scope of M0–M2:** debra only.

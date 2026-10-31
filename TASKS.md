@@ -13,7 +13,7 @@ work units. Decisions are **locked** — do not re-litigate them in code.
 | D4 | Index at rest | **SQLCipher** (`rusqlite` `bundled-sqlcipher`) |
 | D5 | Transport | **`russh` + `russh-sftp`**, in-process, no exec'd `ssh` |
 | D6 | Name | **`tape`** |
-| D7 | Storage | CT 127 on proxmox .57; data on the **spinning RAIDZ2 pool `tank`** → host path `/tank/tapes`, bind-mounted to `/var/lib/tapes` in the CT |
+| D7 | Storage | CT 127 on proxmox; data on the **spinning RAIDZ2 pool `tank`** → host path `/tank/tapes`, bind-mounted to `/var/lib/tapes` in the CT |
 | D8 | Scope M0–M2 | **debra only** |
 
 ## Hard guardrails (every agent, every task)
@@ -87,7 +87,7 @@ hand-checked against the raw jsonl.
 
 **T4 — CT 127 + push + ingest (PLAN M2).** The only infra task. Follow
 `~/homelab/docs/ADDING-A-NEW-SERVICE.md` steps 1–2, **skip 3–4**.
-Verified facts: proxmox `rk@192.168.50.57` (key auth, `sudo -n` works, `rk` is
+Verified facts: proxmox `rk@<proxmox-lan-ip>` (key auth, `sudo -n` works, `rk` is
 uid 1000); highest existing CT is **126**; template
 `local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst` is present; `tank` is a
 filesystem dataset on the RAIDZ2 pool with **33 TiB free** (host path
