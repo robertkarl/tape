@@ -114,41 +114,61 @@ hourly, `StandardOutPath`/`StandardErrorPath` into `~/Library/Logs/tapes/`).
 this is the instrument that proves or kills the pruning hypothesis.
 *Depends on:* T4.
 
-## Parallelization
+## Parallelization (updated after the T1+T2 merge)
 
-Safe to run **concurrently right now**: T1, T2 (separate modules, no shared
-files; T1 first if you want the manifest types settled — T3 imports them).
-Serialize: **T4 alone, human present.** T5 after T3. T6 after T4.
+**T1 and T2 are merged into `main` and measured end to end.** Next up:
+**T3 (parsers + SQLCipher index) is unblocked and is the natural next unit** —
+it consumes `Manifest`/`FileEntry` and the blob store, and touches no infra.
+**T4 stays serialized with the human present.** T5 after T3, T6 after T4.
 
-Fastest useful path: T1+T2 in parallel → T3 → **T4 (this is the milestone that
-ends the data-loss risk)** → T5 → T6.
-
-## Current state of the repo (2026-10-31)
-
-Git repo initialized on `main`. Scaffold committed: workspace `Cargo.toml` with
-the full pre-approved dependency set pinned to current crates.io versions,
-`Cargo.lock` resolved (361 crates — resolution confirms `bundled-sqlcipher` is
-a valid rusqlite feature), all module stubs compiling-shaped with
-`bail!("not implemented (Tx)")`, and `src/types.rs` + `src/paths.rs` as the
-shared contract so parallel branches cannot invent competing types.
-
-**Not yet compile-checked.** The first `cargo check` is a cold build of russh +
-axum + sqlcipher and runs many minutes; it was started and cancelled to avoid
-the wait. Whoever picks up a task should kick it off once, early.
-
-Worktrees (run these, then start one pi session per worktree):
+Worktree recipe for T3 (one checkout per unit; the shared build cache is fine
+for third-party deps, but remember the caveat below about `debug/tape`):
 
 ```bash
 cd ~/Code/claude-transcript-archiver
-git worktree add ../tape-wt/t1-scan -b t1-scan
-git worktree add ../tape-wt/t2-store -b t2-store
-# share one build cache across all three checkouts; cargo takes a lock and
-# serializes concurrent builds. Third-party deps build once; the local crate
-# still rebuilds per branch when you switch sessions.
-echo 'export CARGO_TARGET_DIR=$HOME/Code/tape-target'   # set in each session
+git worktree add ../claude-transcript-archiver-t3 -b t3-index
+export CARGO_TARGET_DIR=$HOME/Code/tape-target
 ```
 
-Ready-to-paste agent briefs: **`prompts/T1.md`**, **`prompts/T2.md`**.
+## Current state of the repo (merged, 2026-10-31)
+
+`main` holds scaffold → `t1-scan` → `t2-store` → integration (`cf9055c`).
+Branch labels `t1-scan`/`t2-store` and the T1 worktree were removed after the
+merge; the history lives in the merge commits.
+
+Working, measured on the real transcripts:
+
+- `tape scan` — 4 roots, 853 files, per-tool counts exact against PLAN §2
+  (pi 292 / claude 205 / codex 356), 14 Claude groups carrying subagents,
+  7 non-quiescent, anomalies reported not filtered; manifest written atomically;
+  `--json` pipeable on stdout.
+- `tape keygen` / `store` / `verify` — 846 blobs, 2387 MiB → 888 MiB (2.69×),
+  verify 846/846, 0 failures; SIGKILL mid-store leaves only complete blobs.
+- 16 tests green (7 in `scan.rs`/`manifest.rs`, 9 in `tests/store_tests.rs`).
+
+Not implemented: `tape push`, `ingest`, `serve`, `audit` (T4/T5/T6).
+
+## Escalations for the human (decisions, not homework)
+
+1. **Post-quantum: `age` is pinned to 0.11.5, which has no ML-KEM layer**
+   (X25519 only). age 0.12 adds it but cannot coexist with russh 0.65 in one
+   dependency graph. Options: accept X25519-only at rest; drop russh's
+   post-quantum KEX to free age 0.12; or `[patch.crates-io]`. The transport
+   still negotiates PQ KEX — only the blob format is affected.
+2. **What counts as a transcript?** T1 found a **21.9 MB `…jsonl.bak`**, a
+   `sessions.sqlite` index and 46 `.lock` files under `~/.pi/agent/sessions`,
+   all skipped by the `.jsonl` filter. PLAN also promises `~/.claude/history.jsonl`.
+   Archive them as bonus artifacts, or hold the line at `.jsonl`?
+3. **11 pi cwd dirs are empty** (83 dirs, 72 populated) — possible historical
+   deletion. Direct input for T6's `audit`/`vanished` work.
+4. Production age identity + `pass` backup (interactive gpg, T2).
+5. T4 needs the human present (Proxmox sudo + firewall egress cut).
+6. `tape serve` port: 8799 assumed.
+7. ~5 GB of agent scratch sits in `/tmp/tape-t1*`, `/tmp/tape-t2*`,
+   `/tmp/tape-merged`, `/tmp/tape-merge-retired` — left in place per the no-`rm`
+   rule; the human decides.
+
+## Open items the human still owes
 
 ## Build gotchas (learned the hard way)
 
@@ -161,9 +181,13 @@ Ready-to-paste agent briefs: **`prompts/T1.md`**, **`prompts/T2.md`**.
   CLI silently reverted to the pre-edit stubs while the source was correct.
   Symptom: `tape store --help` shows no options. Fix: `cargo clean -p tape`.
   Never trust the binary; check `--help` after a build that was interrupted.
+- **A shared `CARGO_TARGET_DIR` means one shared `debug/tape`.** With two
+  worktrees building the same package into the same target dir, the binary
+  belongs to whichever branch built last — it looked like the CLI had silently
+  reverted to old stubs. Build and run in one command (`cargo run -- …`), and
+  check `--help` before trusting a binary from a shared target dir.
 - Cold dependency build is ~361 crates (russh, axum, bundled sqlcipher): about
-  6 minutes on this machine. Warm rebuilds are seconds. Use the shared
-  `CARGO_TARGET_DIR`.
+  6 minutes on this machine. Warm rebuilds are seconds.
 
 ## Open items the human still owes
 
