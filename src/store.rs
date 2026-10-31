@@ -197,6 +197,23 @@ pub fn atomic_write(final_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> 
     Ok(tmp)
 }
 
+/// Same write -> fsync -> rename discipline as `atomic_write`, for non-blob
+/// state files (index keys, anything else under TAPE_HOME). Creates parents;
+/// temp files are left behind, never deleted.
+pub fn atomic_write_bytes(final_path: &Path, bytes: &[u8]) -> anyhow::Result<PathBuf> {
+    if let Some(dir) = final_path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let tmp = final_path.with_extension(format!("tmp-{}", std::process::id()));
+    {
+        let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+    }
+    fs::rename(&tmp, final_path)?;
+    Ok(tmp)
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

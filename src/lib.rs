@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 pub mod db;
+pub mod ingest;
 pub mod manifest;
 pub mod parse;
 pub mod paths;

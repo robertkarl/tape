@@ -3,10 +3,11 @@
 // contracts.
 #![allow(dead_code)]
 
-use tape::{manifest, paths, scan, store, transport, web};
+use tape::{db, ingest, manifest, paths, scan, store, transport, web};
 
 use std::path::PathBuf;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -52,10 +53,13 @@ enum Cmd {
         #[arg(long, default_value = "rk")]
         user: String,
     },
-    /// Archive-host side: ingest received blobs into the index
+    /// Archive-host side: decrypt blobs and rebuild the SQLCipher index
     Ingest {
+        /// Blob directory (default: TAPE_HOME/store/blobs)
         #[arg(long)]
-        store: PathBuf,
+        store: Option<PathBuf>,
+        #[arg(long, default_value_t = store::default_jobs())]
+        jobs: usize,
     },
     /// Serve the browse UI (LAN bind only)
     Serve {
@@ -63,6 +67,13 @@ enum Cmd {
         addr: String,
         #[arg(long, default_value_t = 8799)]
         port: u16,
+    },
+    /// Summarize the index (per-tool sessions/messages/tool calls) for review,
+    /// or run one read-only query against it
+    Stats {
+        /// A single SELECT/PRAGMA statement, for reconciliation and debugging
+        #[arg(long)]
+        sql: Option<String>,
     },
     /// Diff what the tools hold now against what the archive holds; record
     /// vanished session ids (the deletion-detection instrument)
@@ -148,11 +159,50 @@ fn main() -> anyhow::Result<()> {
             println!("{r:?}");
             Ok(())
         }
-        Cmd::Ingest { store } => {
-            let _ = store;
-            anyhow::bail!("not implemented (T4)")
+        Cmd::Ingest { store, jobs } => {
+            let blobs = store.unwrap_or_else(paths::blobs_dir);
+            let m = paths::manifest_path();
+            if !m.exists() {
+                anyhow::bail!("no manifest at {}; run `tape scan` first", m.display());
+            }
+            let manifest = manifest::read_manifest(&m)?;
+            println!(
+                "ingest: {} manifest entries, blobs in {}",
+                manifest.entries.len(),
+                blobs.display()
+            );
+            let conn = db::open_default()?;
+            let r = ingest::ingest(&conn, &manifest, &blobs, &paths::identity_path(), jobs)?;
+            println!("manifest entries:  {}", r.manifest_entries);
+            println!("ingested:          {}", r.ingested);
+            println!("already indexed:   {}", r.already_indexed);
+            println!("missing blob:      {}", r.missing_blob);
+            println!("parse failures:    {}", r.parse_failures);
+            println!("read/decrypt fails:{}", r.failures.len());
+            for f in r.failures.iter().take(10) {
+                println!("  {f}");
+            }
+            for t in ["hosts", "sessions", "messages", "tool_calls", "blobs"] {
+                println!(
+                    "{t:<18}{}",
+                    db::count_rows(&conn, t).context("counting {t}")?
+                );
+            }
+            if !r.failures.is_empty() {
+                anyhow::bail!("{} blobs could not be read or decrypted", r.failures.len());
+            }
+            Ok(())
         }
         Cmd::Serve { addr, port } => web::serve(&addr, port),
+        Cmd::Stats { sql } => {
+            let conn = db::open_default()?;
+            if let Some(q) = sql {
+                db::dump_query(&conn, &db::readonly_sql(&q)?)?;
+                return Ok(());
+            }
+            print!("{}", db::stats(&conn)?);
+            Ok(())
+        }
         Cmd::Audit => anyhow::bail!("not implemented (T6)"),
     }
 }

@@ -43,6 +43,12 @@ pub fn identity_path() -> PathBuf {
     tape_home().join("identity.age")
 }
 
+/// SQLCipher key for the Layer-2 index (mode 0400). On the archive CT this is
+/// overridden by TAPE_DB_KEY or a key under /etc/tapes/.
+pub fn db_key_path() -> PathBuf {
+    tape_home().join("db.key")
+}
+
 pub fn pubkey_path() -> PathBuf {
     tape_home().join("pubkey.txt")
 }
