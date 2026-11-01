@@ -62,6 +62,8 @@ a{color:var(--acc);text-decoration:none;}a:hover{text-decoration:underline;}
 .claude{background:rgba(210,153,34,.16);color:var(--to);}
 .codex{background:rgba(63,185,80,.16);color:var(--ok);}
 .dim{color:var(--dim);} .num{text-align:right;color:var(--dim);}
+/* A path is one long unbroken token; without this it overruns the next cell. */
+td.cwd{word-break:break-all;max-width:240px;}
 .pager{margin-top:16px;font:13px var(--mono);color:var(--dim);}
 </style></head><body><main>
 <h1>tape</h1>
@@ -76,7 +78,7 @@ a{color:var(--acc);text-decoration:none;}a:hover{text-decoration:underline;}
 <button>filter</button>
 </form>
 <table><thead><tr><th>tool</th><th>host</th><th>session</th><th>cwd</th><th>model</th>
-<th class="num">turns</th><th class="num">calls</th><th class="num">blobs</th><th>ended</th></tr></thead>
+<th class="num">turns</th><th class="num">calls</th><th class="num">blobs</th><th class="num">ended</th></tr></thead>
 <tbody>@@ROWS@@</tbody></table>
 <div class="pager">@@PAGER@@</div>
 </main></body></html>"##;
@@ -238,8 +240,8 @@ pub fn list_html(state: &AppState, f: &Filters) -> Result<String> {
         Ok(format!(
             "<tr><td><span class=\"tag {}\">{}</span></td><td>{}</td>\
              <td><a href=\"/s/{}/{}\">{}</a>{}<div class=\"dim\">{}</div></td>\
-             <td>{}</td><td class=\"dim\">{}</td><td class=\"num\">{}</td>\
-             <td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"dim\">{}</td></tr>",
+             <td class=\"cwd\">{}</td><td class=\"dim\">{}</td><td class=\"num\">{}</td>\
+             <td class=\"num\">{}</td><td class=\"num\">{}</td><td class=\"dim num\">{}</td></tr>",
             tool.to_lowercase(),
             esc(&tool),
             esc(&host),
