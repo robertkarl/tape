@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
@@ -86,8 +86,30 @@ pub fn load_all_from(own: &Path, dir: &Path) -> anyhow::Result<Vec<Manifest>> {
             .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
             .collect();
         files.sort();
+
+        // Pushed manifests are named `<host>-<YYYYmmddTHHMMSSZ>.json`, one per
+        // scan, forever. Reading every one would make `ingest` slower each
+        // month, so pick the newest name per host and parse only those; the
+        // rest stay on disk as the history `tape audit` reads.
+        let mut newest: std::collections::BTreeMap<String, PathBuf> = Default::default();
+        let mut unshaped: Vec<PathBuf> = Vec::new();
         for f in files {
-            let m = read_manifest(&f)?;
+            let name = f
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            match split_manifest_name(&name) {
+                Some((host, stamp)) => {
+                    let entry = newest.entry(host).or_insert_with(|| f.clone());
+                    if stamp > manifest_stamp(entry) {
+                        *entry = f;
+                    }
+                }
+                None => unshaped.push(f),
+            }
+        }
+        for f in newest.values().chain(unshaped.iter()) {
+            let m = read_manifest(f)?;
             by_host
                 .entry(m.host.clone())
                 .and_modify(|cur| {
@@ -100,6 +122,35 @@ pub fn load_all_from(own: &Path, dir: &Path) -> anyhow::Result<Vec<Manifest>> {
     }
 
     Ok(by_host.into_values().collect())
+}
+
+/// `<host>-<YYYYmmddTHHMMSSZ>.json` -> Some((host, stamp)). The stamp is fixed
+/// width and contains no '-', so the split is unambiguous even for hostnames
+/// that do.
+fn split_manifest_name(name: &str) -> Option<(String, String)> {
+    let stem = name.strip_suffix(".json")?;
+    let (host, stamp) = stem.rsplit_once('-')?;
+    if host.is_empty() || stamp.len() != 15 {
+        return None;
+    }
+    let b = stamp.as_bytes();
+    let ok = b[0].is_ascii_digit()
+        && b[8] == b'T'
+        && b[1..8].iter().all(|c| c.is_ascii_digit())
+        && b[9..].iter().all(|c| c.is_ascii_digit());
+    if ok {
+        Some((host.to_string(), stamp.to_string()))
+    } else {
+        None
+    }
+}
+
+fn manifest_stamp(path: &Path) -> String {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .and_then(split_manifest_name)
+        .map(|(_, stamp)| stamp)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -222,6 +273,49 @@ mod tests {
             mine_back.generated_at, newer.generated_at,
             "newest manifest for a host wins"
         );
-        assert!(all.iter().any(|m| m.host == "otherhost"));
+        assert!(
+            all.iter().any(|m| m.host == "otherhost"),
+            "a different host is a different archive"
+        );
+    }
+
+    #[test]
+    fn pushed_manifest_history_selects_the_newest_name() {
+        // `tape push` appends one manifest per scan: <host>-<utc>.json. The
+        // history must not be read wholesale on every ingest, and the newest
+        // must win without parsing the rest.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir_str = format!("/tmp/tape-manifest-history-{nanos}");
+        let root = Path::new(&dir_str);
+        let own = root.join("manifest.json"); // deliberately absent
+        let dir = root.join("manifests");
+
+        let mut old = sample_manifest();
+        old.generated_at = Utc.timestamp_millis_opt(1_793_400_000_000).unwrap();
+        write_manifest(&old, &dir.join("testhost-20261030T000000.json")).unwrap();
+
+        let mut mid = sample_manifest();
+        mid.generated_at = Utc.timestamp_millis_opt(1_793_480_000_000).unwrap();
+        write_manifest(&mid, &dir.join("testhost-20261031T000000.json")).unwrap();
+
+        let mut latest = sample_manifest();
+        latest.generated_at = Utc.timestamp_millis_opt(1_793_500_000_000).unwrap();
+        latest.entries.clear();
+        write_manifest(&latest, &dir.join("testhost-20261031T120000.json")).unwrap();
+
+        let all = load_all_from(&own, &dir).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].generated_at, latest.generated_at, "newest name wins");
+        assert!(all[0].entries.is_empty(), "not a stale manifest");
+
+        // The name split must survive hostnames containing dashes.
+        assert_eq!(
+            split_manifest_name("some-host-20261031T120000.json"),
+            Some(("some-host".into(), "20261031T120000".into()))
+        );
+        assert_eq!(split_manifest_name("testhost.json"), None);
     }
 }

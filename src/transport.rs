@@ -229,23 +229,39 @@ async fn push_async(
     // path/tool/session-id ↔ hash, and `manifest.host` is what lets a second
     // machine share this index. It also carries `only`, so the archive host
     // can tell a subset scan from a whole machine.
-    let manifest_remote = format!("{}/{}.json", remote.manifests_dir(), manifest.host);
-    let manifest_tmp = format!("{}.tmp-{}", manifest_remote, pid);
-    let bytes = serde_json::to_vec_pretty(manifest).context("serializing manifest for push")?;
-    write_bytes_remote(&sftp, &manifest_tmp, &bytes).await?;
-    sftp.rename(&manifest_tmp, &manifest_remote)
+    //
+    // One file per scan, never replaced: `manifests/<host>-<utc>.json`.
+    // SFTP's rename will not overwrite an existing name, and more importantly
+    // the series *is* the audit trail — what each host held, and when. `T6
+    // audit` reads this history; it is not a log we want to truncate.
+    let stamp = manifest.generated_at.format("%Y%m%dT%H%M%SZ");
+    let manifest_remote = format!("{}/{}-{}.json", remote.manifests_dir(), manifest.host, stamp);
+    if sftp
+        .try_exists(&manifest_remote)
         .await
-        .with_context(|| format!("renaming manifest into {}", manifest_remote))?;
-    let md = sftp
-        .metadata(&manifest_remote)
-        .await
-        .with_context(|| format!("statting {}", manifest_remote))?;
-    anyhow::ensure!(
-        md.size == Some(bytes.len() as u64),
-        "manifest size mismatch on the remote: {:?} != {}",
-        md.size,
-        bytes.len()
-    );
+        .with_context(|| format!("checking {manifest_remote}"))?
+    {
+        // Same scan, pushed again (a retry after a partial failure): nothing
+        // to do, and nothing to overwrite.
+        tracing::info!("manifest already delivered: {manifest_remote}");
+    } else {
+        let manifest_tmp = format!("{}.tmp-{}", manifest_remote, pid);
+        let bytes = serde_json::to_vec_pretty(manifest).context("serializing manifest for push")?;
+        write_bytes_remote(&sftp, &manifest_tmp, &bytes).await?;
+        sftp.rename(&manifest_tmp, &manifest_remote)
+            .await
+            .with_context(|| format!("renaming manifest into {}", manifest_remote))?;
+        let md = sftp
+            .metadata(&manifest_remote)
+            .await
+            .with_context(|| format!("statting {}", manifest_remote))?;
+        anyhow::ensure!(
+            md.size == Some(bytes.len() as u64),
+            "manifest size mismatch on the remote: {:?} != {}",
+            md.size,
+            bytes.len()
+        );
+    }
     report.manifest_remote = Some(manifest_remote);
 
     let _ = sftp.close().await;

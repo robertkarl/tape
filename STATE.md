@@ -14,7 +14,7 @@ pushes must be fast-forward.
 | T1 `scan` | done, merged |
 | T2 `keygen/store/verify` | done, merged |
 | **T3 parsers + SQLCipher index + `ingest`/`stats`** | **done, merged, acceptance met** |
-| **T4 CT 127 + `push`** | **code done and measured end to end; the CT itself is not built** |
+| **T4 CT 127 + `push`** | **done except the firewall egress cut.** CT `tapes` (127) is up at 192.168.50.108 and holds the first real archive |
 | T5 renderer port + `serve` | not started, depends on T3 (unblocked) |
 | T6 launchd + `audit` | not started, depends on T4 |
 
@@ -127,7 +127,47 @@ Note `--key ~/.ssh/id_rsa`: on debra, `id_rsa` is in `authorized_keys` and
 `id_ed25519` is **not**. That only matters for this loopback test — on the CT we
 write its `authorized_keys`, and `tape push` defaults to `id_ed25519`.
 
-### Remaining T4 work: the container (human present)
+### The archive host as built (2026-10-31, with the human present)
+
+| | |
+|---|---|
+| CT | `127 tapes` on proxmox, unprivileged, Debian 13, 2 cores / 1024 MB / 2 GB swap, `onboot 1`, `ip=dhcp`, `firewall=1` |
+| rootfs | `tank-vm-disks:subvol-127-disk-0,size=8G` — 7.7 G free |
+| archive dataset | `mp0: /tank/tapes,mp=/var/lib/tapes,backup=0` — 34 T |
+| user | `rk` inside the CT (uid 1000 → **101000 on the host**; `/tank/tapes` chowned to it) |
+| age identity | `/var/lib/tapes/identity.age`, mode **0400**, generated **on the CT**, never copied out. debra holds only `pubkey.txt` |
+| index key | `/var/lib/tapes/db.key`, mode **0400**, auto-generated at first ingest |
+| toolchain | **rustup stable 1.99.1** — Debian 13's `rustc 1.85` is too old: russh and rusqlite declare `rust-version = 1.89` |
+| apt deps | `build-essential cmake pkg-config perl git curl ca-certificates` **and `libssl-dev`** |
+| build | `cargo build --release` ≈ 4 min total on 2 cores (2 min to the sqlcipher failure + 1.5 min after the fix) |
+| tests on x86_64 | 41 passed (27 + 5 + 9) |
+| host key | `SHA256:FzrV7W/N1YJziYdrgk4YlQ6RXsUyLyoi0k3aCXcuDV4` — recorded TOFU by tape, then **verified against the CT's own `ssh_host_ed25519_key.pub`** |
+| first archive | 10 blobs (pi 8 + codex 2), verified 10/10 on the CT, ingested: 10 sessions / 818 messages / 735 tool calls, 0 parse failures |
+| re-push | `already present: 10, to send: 0`; re-ingest `ingested: 0, already indexed: 10` |
+
+**Three things the real run corrected in this file:**
+
+1. **Rootfs syntax.** `--rootfs tank-vm-disks:vm-127-disk-0,size=8G` does *not*
+   work — that form names an existing volume. `tank-vm-disks:8` creates a new
+   8 G one. (Earlier note here said the opposite; it was wrong.)
+2. **`pct create` over ssh hangs** waiting for a root-password prompt. Feed it
+   `</dev/null`, or pass `--ssh-public-key <file>` — and note the key argument
+   is a **file path or URL, not inline key data**.
+3. **`tape verify` only works on the archive host.** It needs the private
+   identity, which by design never leaves it. On a source host the sequence is
+   `scan → store → push`; verification is the archive host's job.
+
+**Pushed manifests are history, not a file that gets replaced.** The first
+re-push failed: SFTP `rename` will not overwrite an existing name. Rather than
+force it, `push` now writes `manifests/<host>-<YYYYmmddTHHMMSSZ>.json`, one per
+scan, and `load_all` selects the newest name per host without parsing the rest.
+That history is what `tape audit` (T6) will read to answer "what did the tools
+hold at time T" — a log we do not want to truncate.
+
+Left behind by that bug, inert and ignored (they do not end in `.json`):
+`/var/lib/tapes/manifests/debra.json.tmp-{32367,32397,32688,32714}`.
+
+### Remaining T4 work
 
 **Infra is clean and verified:** CT 127 is gone (Proxmox rolled back the aborted
 create — `pct config 127` does not exist, no `subvol-127` dataset). `tank/tapes`
@@ -139,18 +179,21 @@ that works: `--rootfs tank-vm-disks:vm-127-disk-0,size=8G` (explicit
 Conventions: unprivileged, `ip=dhcp`, `firewall=1` on net0, `features nesting=1`.
 Sizing: 1024 MB + 2 GB swap + 2 cores for the build, then drop to 512 MB.
 
-Session plan: `pct create 127` → `rk` user + debra's pubkey in
-`/home/rk/.ssh/authorized_keys` → `apt install build-essential cmake pkg-config
-perl` + rust → `git clone https://github.com/robertkarl/tape` → build →
-`tape keygen` **inside the CT** (private identity never leaves it) → copy the
-CT's `pubkey.txt` into debra's `TAPE_HOME/pubkey.txt` (debra encrypts *to the
-archive host's key*, so this must happen before the first `tape store`) →
-`tape scan --only … && tape store && tape verify` on debra → `tape push` →
-`tape ingest` + `tape verify` on the CT → **then** cut egress (LAN only).
+What is left of T4, in order:
 
-**Budget for the compile:** russh pulls **`aws-lc-sys`**, which builds with
-CMake; with bundled SQLCipher on 2 cores expect **10–20 minutes**, not the 6
-minutes on debra.
+1. **The firewall egress cut** — the last mutation, and the only one that is
+   awkward to undo. Not applied yet. Proposed CT-level rules
+   (`/etc/pve/firewall/127.fw`): `policy_in DROP`, `policy_out DROP`, allow in
+   from `192.168.50.0/24` for 22 (and later 8799 for `tape serve`). **Timing
+   trade-off worth deciding deliberately:** cutting egress now means every
+   future `git pull` / `cargo build` on the CT (T5 is built there) needs the
+   rule temporarily relaxed. Building T5 first and cutting egress afterwards
+   avoids that, at the cost of a few more days with outbound access on a box
+   that is meant to have none.
+2. **Sizing** — agreed to drop to 512 MB after the build. Left at **1024 MB**
+   on purpose: T5 rebuilds on this CT and 512 MB is tight for linking
+   `aws-lc-sys` + SQLCipher. Revisit after T5 lands.
+3. **T6 launchd** will make the push hourly; nothing about it is blocked.
 
 ## Reusable fixtures (all under /tmp, none deleted)
 

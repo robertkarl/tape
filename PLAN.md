@@ -260,10 +260,19 @@ Follow `~/homelab/docs/ADDING-A-NEW-SERVICE.md` steps 1–2, skip 3–4:
 
 ```
 sudo pct create 127 local:vztmpl/debian-13-standard_13.1-2_amd64.tar.zst \
-  --hostname tapes --memory 1024 --cores 1 --swap 512 \
+  --hostname tapes --memory 1024 --cores 2 --swap 2048 \
   --net0 name=eth0,bridge=vmbr0,ip=dhcp,firewall=1 \
-  --rootfs local-lvm:8 --unprivileged 1 --onboot 1
+  --rootfs tank-vm-disks:8 --unprivileged 1 --onboot 1 \
+  --mp0 /tank/tapes,mp=/var/lib/tapes,backup=0 \
+  --ssh-public-key /tmp/debra-ed25519.pub
 ```
+
+That is what was actually run (2026-10-31), with three traps recorded:
+`local-lvm` is 99.89% full so the rootfs goes on `tank-vm-disks`; the rootfs
+argument is `storage:SIZE` to *create* a volume (`storage:volname` addresses an
+existing one and fails); and `pct create` otherwise blocks on a root-password
+prompt, so feed it `</dev/null` or supply `--ssh-public-key`, which takes a
+**file path**, not key text.
 
 - Data on `tank`: create `tank/tapes` (or a dataset mount) and bind-mount into
   the CT at `/var/lib/tapes` so the archive lives on the RAIDZ2 pool, not the
