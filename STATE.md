@@ -15,7 +15,8 @@ pushes must be fast-forward.
 | T2 `keygen/store/verify` | done, merged |
 | **T3 parsers + SQLCipher index + `ingest`/`stats`** | **done, merged, acceptance met** |
 | **T4 CT 127 + `push`** | **done except the firewall cut, deliberately deferred until after T5.** CT `tapes` (127) is up at 192.168.50.108 and holds the first real archive |
-| **T5 renderer port + `serve`** | **next.** Brief in `prompts/T5.md`; stubs only, deps already present |
+| **T5 renderer port + `serve`** | **done and live on the archive host** (`http://192.168.50.108:8799`). Report: `REPORT-T5.md` |
+| **T6 launchd + `audit`** | **next.** M5: hourly push from debra, `audit` already coded, laptop over Tailscale |
 | T6 launchd + `audit` | not started, depends on T4 |
 
 42 tests pass (28 unit, 5 index integration, 9 store).
@@ -181,40 +182,57 @@ Sizing: 1024 MB + 2 GB swap + 2 cores for the build, then drop to 512 MB.
 
 What is left of T4, in order:
 
-1. **The firewall egress cut — decided: AFTER T5.** Not applied yet. Proposed
-   CT-level rules (`/etc/pve/firewall/127.fw`): `policy_in DROP`,
-   `policy_out DROP`, allow in from `192.168.50.0/24` for 22 and 8799. Until it
-   is cut, the CT can `git pull` and `cargo build`, which is how T5 gets
-   deployed. **Cutting it is a human-present task.**
-2. **Sizing — stays at 1024 MB until T5 is built**, then revisit 512 MB.
-   Linking `aws-lc-sys` + bundled SQLCipher in 512 MB is a coin flip.
+1. **The firewall egress cut — the only T4 item left, and T5 is now built on
+   the CT, so it can happen any time the human is present.** Not applied yet.
+   Proposed CT-level rules (`/etc/pve/firewall/127.fw`): `policy_in DROP`,
+   `policy_out DROP`, allow in from `192.168.50.0/24` for 22 and 8799 (8799 is
+   `tape serve`, live now). Cutting it means every future `git pull` /
+   `cargo build` on the CT needs the rule temporarily relaxed.
+2. **Sizing — stays at 1024 MB for now.** The axum/tokio build landed without
+   pressure; 512 MB is worth a try once the firewall work is done and the box
+   is no longer being rebuilt.
 3. **T6 launchd** will make the push hourly; nothing about it is blocked.
 4. Cosmetic: `/var/lib/tapes/manifests/debra.json.tmp-{32367,32397,32688,32714}`
    are inert debris from the pre-fix push (they do not end in `.json`, so the
    loader ignores them). Delete only on request.
 
-## T5 — ready to start
+## T5 — done (2026-11-01)
 
-Brief: **`prompts/T5.md`**. Readiness facts:
+Full write-up: **`REPORT-T5.md`**. The short version:
 
-- `src/render/mod.rs` and `src/web.rs` are stubs; `axum` + `tokio` are already
-  dependencies. Nothing else needs to exist first — T3's canonical `Session`
-  is the renderer's input.
-- **Deploy loop for the CT:** `git push origin main` from debra, then on the CT
-  `cd ~/tape && git pull --ff-only && cargo build --release` (egress still
-  open — that is exactly what the deferred firewall cut buys).
-- **The CT index has no Claude sessions** (the D9 subset has none), so PLAN M4's
-  acceptance — "the Claude page renders subagents" — must be taken on debra
-  against `TAPE_HOME=/tmp/tape-t3-full` (96 Claude sessions, 14 groups with
-  subagents). Do not widen the subset for a nicer demo; that is the human's call.
-- Renderer source to port: `~/Code/regina/scripts/render_trace.py`, 915 lines,
-  `HTML_TMPL` from line 646. Lines 84–208 (`find_context_files`,
-  `injected_context`, `find_meta`) read a live source repo and are **not**
-  portable — the index is the only input on the archive host.
+- `src/render/` is render_trace.py translated (template verbatim, badges,
+  highlighter as a scanner with no regex crate), `src/web.rs` is axum with two
+  pages. No `Cargo.toml` change.
+- **Running on the CT as `rk`:**
+  `TAPE_HOME=/var/lib/tapes setsid nohup ./target/release/tape serve --addr 192.168.50.108 --port 8799`
+  — started, verified from debra in a real browser. **It does not survive a
+  reboot**: no systemd unit yet, which belongs with M5.
+- M4 acceptance measured: Claude `7bd359d5` 35 turns / 17 subagent turns marked
+  / 3 edit diffs; codex `019d68e5` 930 turns / 2503 coloured patch lines; pi
+  `019e5ae1` 27 turns / 12 edit diffs; the CT's own `01a1899d` over the LAN.
+  Largest session `e707f04a`: 8630 turns, 1.06 s to render, **45 MB page**.
+- Guardrails proven by tests: `PRAGMA query_only` (an INSERT fails), filters are
+  parameters (`'; DROP TABLE sessions; --` is just a value), `serve` refuses
+  `0.0.0.0`, a flipped ciphertext byte is a `hash mismatch` error not a page.
+- Known limits, none blocking: no FTS (so `q=` searches id/model/cwd only),
+  45 MB pages for giant sessions want server-side turn paging, Codex sessions
+  show no tokens/cost, `unmapped_lines` still has no column.
+
+Two traps paid for, both worth remembering:
+
+- **axum 0.8 routes are `{param}`, not `:param`** — it panics at startup.
+- **`pkill -f "tape serve"` over ssh kills the ssh session itself** (the pattern
+  matches the command line of the shell running it). Use `pkill -x tape`, or
+  separate the kill and the start into different ssh calls.
 
 ## Reusable fixtures (all under /tmp, none deleted)
 
 - `TAPE_HOME=/tmp/tape-t3-full` — 848 blobs, verified, **indexed** (current parsers).
+  This is the fixture the renderer is developed against (96 claude / 356 codex /
+  291 pi, 14 Claude groups with subagents). `tape serve` was run against it on
+  `127.0.0.1:8799`; that dev server has been stopped.
+- Rendered pages kept for review: `/tmp/tape-t5-*.html`, `/tmp/tape-ct-*.html`,
+  screenshots `/tmp/t5-*.png`.
 - `TAPE_HOME=/tmp/tape-merged` — 846 blobs, indexed with pre-span-fix parsers;
   that stale index is at `state.db.pre-span-fix`, moved aside not deleted.
 - Spot-check script: `/tmp/tape-spotcheck.py` (dev-only, not in the repo — the
