@@ -16,7 +16,7 @@ tape verify    decrypt, re-hash, report
 tape ingest    decrypt blobs -> SQLCipher index (sessions / messages / tool_calls)
 tape stats     per-tool counts, or one read-only query
 tape push      send missing blobs to the archive host over SFTP
-tape serve     browse UI on the LAN                               (not yet)
+tape serve     browse UI on the LAN                               (live on the archive host)
 tape audit     diff source vs archive, record vanished sessions   (not yet)
 ```
 
@@ -47,12 +47,20 @@ Built and measured on real transcripts: `scan`, `keygen`, `store`, `verify`,
 `ingest`, `stats`. 846 blobs from ~2.4 GB of JSONL, 2.69x smaller, 740 sessions,
 93k messages, 55k tool calls, zero parse failures.
 
-Built: `push` — one SSH connection, one SFTP channel, the remote blob listing
-*is* the diff, uploads renamed into place, host keys trust-on-first-use in
-tape's own `known_hosts`. Measured end to end against a real OpenSSH server.
+Built and measured end to end: `push` — one SSH connection, one SFTP channel,
+the remote blob listing *is* the diff, uploads renamed into place, host keys
+trust-on-first-use in tape's own `known_hosts`. The archive host is a Proxmox
+container on a spinning RAIDZ2 pool; its private age identity never leaves it,
+so source machines hold only the public key.
 
-Not built: `serve`, `audit`, the archive container itself, and the launchd job
-that makes the copy automatic. See `STATE.md`.
+Built: `serve` — axum, LAN bind only, no auth by decision. The list page reads
+the index; a session page decrypts that session's blobs, re-verifies each
+content hash, parses, and renders one self-contained HTML page (timeline rail,
+density modes, one turn at a time, edits as diffs). Read-only at the
+connection level: `PRAGMA query_only` before the first query.
+
+Not built: `audit`'s scheduled run, and the launchd job that makes the copy
+automatic. See `STATE.md`.
 
 Working scope is deliberately narrow: until the pipeline is proven end to end,
 tape archives **one project's sessions** — whatever `tape scan --only <path>`
