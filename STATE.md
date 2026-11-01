@@ -14,11 +14,11 @@ pushes must be fast-forward.
 | T1 `scan` | done, merged |
 | T2 `keygen/store/verify` | done, merged |
 | **T3 parsers + SQLCipher index + `ingest`/`stats`** | **done, merged, acceptance met** |
-| **T4 CT 127 + `push`** | **done except the firewall egress cut.** CT `tapes` (127) is up at 192.168.50.108 and holds the first real archive |
-| T5 renderer port + `serve` | not started, depends on T3 (unblocked) |
+| **T4 CT 127 + `push`** | **done except the firewall cut, deliberately deferred until after T5.** CT `tapes` (127) is up at 192.168.50.108 and holds the first real archive |
+| **T5 renderer port + `serve`** | **next.** Brief in `prompts/T5.md`; stubs only, deps already present |
 | T6 launchd + `audit` | not started, depends on T4 |
 
-41 tests pass (27 unit, 5 index integration, 9 store).
+42 tests pass (28 unit, 5 index integration, 9 store).
 
 ## T3 acceptance, measured
 
@@ -181,19 +181,36 @@ Sizing: 1024 MB + 2 GB swap + 2 cores for the build, then drop to 512 MB.
 
 What is left of T4, in order:
 
-1. **The firewall egress cut** — the last mutation, and the only one that is
-   awkward to undo. Not applied yet. Proposed CT-level rules
-   (`/etc/pve/firewall/127.fw`): `policy_in DROP`, `policy_out DROP`, allow in
-   from `192.168.50.0/24` for 22 (and later 8799 for `tape serve`). **Timing
-   trade-off worth deciding deliberately:** cutting egress now means every
-   future `git pull` / `cargo build` on the CT (T5 is built there) needs the
-   rule temporarily relaxed. Building T5 first and cutting egress afterwards
-   avoids that, at the cost of a few more days with outbound access on a box
-   that is meant to have none.
-2. **Sizing** — agreed to drop to 512 MB after the build. Left at **1024 MB**
-   on purpose: T5 rebuilds on this CT and 512 MB is tight for linking
-   `aws-lc-sys` + SQLCipher. Revisit after T5 lands.
+1. **The firewall egress cut — decided: AFTER T5.** Not applied yet. Proposed
+   CT-level rules (`/etc/pve/firewall/127.fw`): `policy_in DROP`,
+   `policy_out DROP`, allow in from `192.168.50.0/24` for 22 and 8799. Until it
+   is cut, the CT can `git pull` and `cargo build`, which is how T5 gets
+   deployed. **Cutting it is a human-present task.**
+2. **Sizing — stays at 1024 MB until T5 is built**, then revisit 512 MB.
+   Linking `aws-lc-sys` + bundled SQLCipher in 512 MB is a coin flip.
 3. **T6 launchd** will make the push hourly; nothing about it is blocked.
+4. Cosmetic: `/var/lib/tapes/manifests/debra.json.tmp-{32367,32397,32688,32714}`
+   are inert debris from the pre-fix push (they do not end in `.json`, so the
+   loader ignores them). Delete only on request.
+
+## T5 — ready to start
+
+Brief: **`prompts/T5.md`**. Readiness facts:
+
+- `src/render/mod.rs` and `src/web.rs` are stubs; `axum` + `tokio` are already
+  dependencies. Nothing else needs to exist first — T3's canonical `Session`
+  is the renderer's input.
+- **Deploy loop for the CT:** `git push origin main` from debra, then on the CT
+  `cd ~/tape && git pull --ff-only && cargo build --release` (egress still
+  open — that is exactly what the deferred firewall cut buys).
+- **The CT index has no Claude sessions** (the D9 subset has none), so PLAN M4's
+  acceptance — "the Claude page renders subagents" — must be taken on debra
+  against `TAPE_HOME=/tmp/tape-t3-full` (96 Claude sessions, 14 groups with
+  subagents). Do not widen the subset for a nicer demo; that is the human's call.
+- Renderer source to port: `~/Code/regina/scripts/render_trace.py`, 915 lines,
+  `HTML_TMPL` from line 646. Lines 84–208 (`find_context_files`,
+  `injected_context`, `find_meta`) read a live source repo and are **not**
+  portable — the index is the only input on the archive host.
 
 ## Reusable fixtures (all under /tmp, none deleted)
 
