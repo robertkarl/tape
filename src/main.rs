@@ -81,7 +81,9 @@ enum Cmd {
     },
     /// Serve the browse UI (LAN bind only)
     Serve {
-        #[arg(long, default_value = "0.0.0.0")]
+        /// Deliberately loopback by default: this UI has no auth, so a bind to
+        /// a routable address must be something you typed.
+        #[arg(long, default_value = "127.0.0.1")]
         addr: String,
         #[arg(long, default_value_t = 8799)]
         port: u16,
