@@ -59,18 +59,27 @@ content hash, parses, and renders one self-contained HTML page (timeline rail,
 density modes, one turn at a time, edits as diffs). Read-only at the
 connection level: `PRAGMA query_only` before the first query.
 
-Not built: `audit`'s scheduled run, and the launchd job that makes the copy
-automatic. See `STATE.md`.
+Built: the launchd job (`deploy/net.robertkarl.tapes.plist`, every 15 min) and
+the CT-side `tape-ingest` / `tape-verify` systemd timers — see `deploy/README.md`.
 
-Working scope is deliberately narrow: until the pipeline is proven end to end,
-tape archives **one project's sessions** — whatever `tape scan --only <path>`
-selects — rather than the whole machine. See PLAN §2.1 (decision D9).
+Not built: `audit`.
+
+Scope: the whole machine. `tape scan` with no `--only` walks all four roots; the
+earlier one-project subset (decision D9) was lifted on 2026-11-02 and must stay
+lifted, because the archive host takes the **newest manifest per host** and a
+subset push would make everything outside it look vanished to `audit`.
 
 ## Build
 
 ```bash
 cargo build          # deps: russh, axum, rusqlite/bundled-sqlcipher, age, zstd
-cargo test           # 37 tests
+cargo test           # 70 tests
 ```
 
 `age` is pinned to 0.11 deliberately — see the comment in `Cargo.toml`.
+
+## License
+
+MIT — see `LICENSE`. One exception worth knowing: `src/render/template.rs` is a
+translation of `render_trace.py` from a separate private project of the same
+author, and its header attribution is kept in the file.

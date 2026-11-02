@@ -9,7 +9,7 @@ are the files plus the commands that install them.
 | `tape-serve.service` (system unit) | archive CT 127 | **installed, enabled, two reboots verified** |
 | `tape-ingest.service` + `.timer` | archive CT 127 | **installed** — boot+2 min, then every 15 min |
 | `tape-verify.service` + `.timer` | archive CT 127 | **installed** — weekly, Sun ~04:30 |
-| `net.robertkarl.tapes.plist` + `tape-push.sh` | debra (launchd) | written, **not installed** |
+| `net.robertkarl.tapes.plist` + `tape-push.sh` | debra (launchd) | **installed, bootstrapped, every 15 min** |
 
 ## Operating rule
 
@@ -87,23 +87,50 @@ The bind address is hardcoded because `serve` refuses `0.0.0.0` (decision D3:
 LAN plaintext, no auth), and the CT is `ip=dhcp` — a static lease would remove
 the coupling between the unit, the firewall rule, and the DHCP server.
 
-## The hourly push from debra — written, not installed
+## The scheduled push from debra — installed
 
-`tape-push.sh` is what the LaunchAgent runs, **not `tape push` alone**: `push`
-only ships blobs, so `scan` and `store` have to run first. It runs a
-**whole-machine** scan — D9 (the `~/Code/ubdogs` subset) was lifted on 2026-11-02,
-and it must stay lifted: the CT takes the newest manifest per host, so a subset
-push would make a subset current again and `audit` would report everything else as
-vanished. `store` takes no `--only` at all — it reads the manifest `scan` wrote.
-macOS has no `flock(1)`, so the overlap guard in the script is a `pgrep`.
+`~/Library/LaunchAgents/net.robertkarl.tapes.plist`, `RunAtLoad` +
+`StartInterval 900` (15 min, matching `tape-ingest.timer`), logs in
+`~/Library/Logs/tapes/`. Verify with:
 
 ```sh
-mkdir -p ~/Library/Logs/tapes
-cp deploy/net.robertkarl.tapes.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/net.robertkarl.tapes.plist
-launchctl kickstart -k gui/$(id -u)/net.robertkarl.tapes
+launchctl print gui/$(id -u)/net.robertkarl.tapes | grep -E 'state|runs|last exit|run interval'
 tail -f ~/Library/Logs/tapes/push.out.log
+log show --predicate 'eventMessage CONTAINS "net.robertkarl.tapes"' --last 1d   # lifecycle
 ```
+
+`tape-push.sh` is what the agent runs, **not `tape push` alone**: `push` only
+ships blobs, so `scan` and `store` run first. It runs a **whole-machine** scan —
+D9 (the `~/Code/ubdogs` subset) was lifted on 2026-11-02 and must stay lifted: the
+CT takes the newest manifest per host, so a subset push would make a subset
+current again and `audit` would report everything else as vanished. `store` takes
+no `--only` at all — it reads the manifest `scan` wrote. macOS has no `flock(1)`,
+so the overlap guard is a `pgrep`.
+
+**It retries.** The first real run exited 1 on `No route to host (os error 65)`
+while the CT was demonstrably up — a transient on debra. `push` is now attempted
+3× with a 20 s sleep, and the 15-minute interval means one bad moment cannot cost
+an hour.
+
+### Status surface
+
+Every run writes, under `~/Library/Application Support/tapes/`:
+
+| file | what it is |
+|---|---|
+| `last-push.json` | the last run, temp-then-rename (atomic) |
+| `push-history.jsonl` | appended forever |
+| `push-report.html` | static dashboard, self-refreshes every 15 min — `open ~/Library/Application\\ Support/tapes/push-report.html` |
+
+The report shows per-run counts, the error text of any failure, and **staleness**:
+if no push has succeeded in 45 minutes it says so in red. A green row that is six
+hours old is a failure, and that is the case a naive "last run: ok" hides. Skipped
+ticks (overlap guard) are recorded too, so they can't masquerade as successes.
+
+Console.app covers the other half: launchd's start/exit events are in the unified
+log (`eventMessage CONTAINS "net.robertkarl.tapes"`), but a `StandardOutPath` job's
+output never reaches the log — so Console answers "did it run", the report answers
+"what did it do".
 
 No root needed on debra, and nothing needs to stay alive: the archive is
 append-only and idempotent, so a missed hour costs nothing. Credential is

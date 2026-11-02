@@ -1,7 +1,10 @@
-<!-- T6: hourly push from debra -> archive CT 127.
+<!-- T6: scheduled push from debra -> archive CT 127.
      Mirrors ~/Library/LaunchAgents/net.robertkarl.regina-brain-scheduler.plist.
-     NOT INSTALLED YET - see deploy/README.md for the install/load commands.
-     Source hosts push (decision D2); the CT never reaches out. -->
+     Source hosts push (decision D2); the CT never reaches out.
+     Status surface written by the script: ~/Library/Application Support/tapes/
+       last-push.json (atomic), push-history.jsonl, push-report.html (open this).
+     Lifecycle events (start/exit) are also in the unified log:
+       log show --predicate 'eventMessage CONTAINS "net.robertkarl.tapes"' --last 1d -->
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -23,7 +26,10 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>RunAtLoad</key>        <true/>
-  <key>StartInterval</key>    <integer>3600</integer>
+  <!-- 15 min, to match tape-ingest.timer on the archive host. The first real run
+       failed on a transient EHOSTUNREACH; the script retries 3x internally, and a
+       shorter interval means one bad Wi-Fi moment does not cost an hour. -->
+  <key>StartInterval</key>    <integer>900</integer>
   <key>ProcessType</key>      <string>Background</string>
   <key>StandardOutPath</key>  <string>/Users/robertkarl/Library/Logs/tapes/push.out.log</string>
   <key>StandardErrorPath</key><string>/Users/robertkarl/Library/Logs/tapes/push.err.log</string>

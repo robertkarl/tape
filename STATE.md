@@ -422,6 +422,61 @@ The best merge test the archive now has: `67170c0c…` (regina, 2026-08-17,
    `MemoryMax`. `tape-serve` is capped at 512 M; ingest is not. Worth a cap or a
    `MemoryHigh`, otherwise a big ingest is the thing that OOMs the box.
 
+### The scheduled push is installed (2026-11-02) — and its first run failed
+
+`~/Library/LaunchAgents/net.robertkarl.tapes.plist`, bootstrapped into
+`gui/501`, `RunAtLoad` + **`StartInterval 900`** (raised from 3600 to match
+`tape-ingest.timer`), stdout/stderr in `~/Library/Logs/tapes/`.
+
+**Run 1 exited 1:**
+
+```
+Error: connecting to 192.168.50.108:22 over ssh
+Caused by:  No route to host (os error 65)
+```
+
+The CT's journal shows it **up and answering at that moment** (my `sudo … stats`
+commands logged at 06:35, no link/DHCP event anywhere), so `EHOSTUNREACH` was
+transient on debra — Wi-Fi/ARP. Two fixes: the script now **retries `push` 3×
+with a 20 s sleep**, and the interval is 15 min so one bad moment cannot cost an
+hour. Run 2 exited 0.
+
+**Two defects that test found, both fixed:**
+
+1. `launchctl kickstart -k` raced the `RunAtLoad` instance; the overlap guard
+   printed `another push is still running; skipping this tick` and **exited 0
+   without recording anything** — which would have left the status page looking
+   current when it was stale. A skipped tick is now recorded as
+   `"kind": "skipped"`.
+2. `last()` in the status parser forgot `re.MULTILINE`, so `manifest_remote`
+   came out `null`. Now populated.
+
+**Status surface** (written by the script, no new server, no new code in Rust):
+`~/Library/Application Support/tapes/`
+
+| file | what |
+|---|---|
+| `last-push.json` | one record, written temp-then-rename |
+| `push-history.jsonl` | appended per run, never truncated |
+| `push-report.html` | static, self-refreshing every 15 min; shows per-run counts, failures with their error text, and **staleness** — `no successful push in N minutes` when N > 45 |
+
+**On Console.app:** it is the right tool for *lifecycle*, not for *content*. The
+unified log already has it — `log show --predicate 'eventMessage CONTAINS
+"net.robertkarl.tapes"' --last 1d` returns launchd's `service inactive` and the
+BackgroundTaskManagement registration. But a `StandardOutPath` job's output never
+reaches the log, so the counts (what moved, what failed) only exist in the files
+above. Use Console for "did it run", the report for "what did it do".
+
+Also noted: at CT boot, `systemd-networkd.socket: Failed with result
+'service-start-limit-hit'` — `networking.service` still finished and the address
+appeared; worth watching if the boot race ever stops self-healing.
+
+### Housekeeping
+
+`LICENSE` added (**MIT**, Robert Karl, 2026), `license = "MIT"` in `Cargo.toml`,
+README's stale D9 paragraph replaced (scope is the whole machine now) and its test
+count corrected to **70** (48 unit + 5 index + 9 store + 8 web).
+
 ## Reusable fixtures (all under /tmp, none deleted)
 
 - `TAPE_HOME=/tmp/tape-t3-full` — 848 blobs, verified, **indexed** (current parsers).

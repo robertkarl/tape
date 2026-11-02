@@ -3,6 +3,7 @@ name = "tape"
 version = "0.1.0"
 edition = "2021"
 description = "Local-first, append-only transcript archive for pi / Claude Code / Codex"
+license = "MIT"
 
 # Dependency policy: this list is PRE-APPROVED and complete for M0-M4.
 # Do not add crates in a feature branch without noting it in your report;
