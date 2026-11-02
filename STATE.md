@@ -268,6 +268,66 @@ coded" — wrong; `src/main.rs:284` is `Cmd::Audit => anyhow::bail!("not
 implemented (T6)")`. That is the remaining T6 work, and it must key on
 `(session_id, hash)`, never path (see *Paths move under us*).
 
+### Measured on 2026-11-02: this project's own transcripts went through the whole pipeline
+
+`scan --only ~/Code/claude-transcript-archiver` → `store` → `push` → `ingest` → UI, all
+from debra, no loopback fake:
+
+| stage | result |
+|---|---|
+| scan | pi **4** files + claude **1** (703 KB) = 5 files, 5.46 MB; **1 non-quiescent** |
+| store | 4 blobs, 5 MiB → 2 MiB (**2.68×**), 0 failures |
+| push | dry-run 4/then uploaded **4**, verified by size 4, manifest `manifests/debra-20261102T055956Z.json` |
+| CT `verify` | **14/14 ok**, 0 failures |
+| CT `ingest` | ingested **4**, missing blob 0, parse failures 0, read/decrypt fails 0 |
+| index now | **14 sessions / 1489 turns / 14 blobs**, 1 host |
+
+Archived from this project: pi `01a193df` **517 turns** (45.0 M in / 353 k out tokens),
+pi `01a193ef` 102, claude `1b70d6ff` 46, pi `01a19ac9` 6. The list page picked the new
+rows up **without restarting `serve`**.
+
+**This very session is `01a19aca`, and `scan` refuses it: `quiescent=false`.**
+`QUIESCENCE_MINUTES = 10` (`src/scan.rs:29`) and the file is being written as we speak.
+That is the guardrail doing its job — it lands on the next pass, which is what the
+hourly job is for.
+
+### The `linger` gap is worse than "doesn't boot": measured
+
+`loginctl show-user rk` → **`Linger=no`**. With no lingering, `user@1000.service` is
+torn down when the **last login session closes**, and it takes the user unit's process
+with it. So the site exists only while someone is logged into the CT:
+
+```
+# last ssh session to the CT closed, polling 8799:
++6s 200   +12s 200   +18s 000   +24s 000   +30s 000   +36s 000   +42s 000
+```
+
+Symptoms that sent me hunting: `curl` failing at a constant **14.77 s** (`exit=28`,
+couldn't connect) while the same URL returned 200 in 4 ms moments earlier; `ss -ltnp`
+showing **no listener on 8799** while `systemctl --user is-active` said `active`;
+`ExecMainStartTimestamp` marching forward (05:52:51 → 06:03:12 → 06:05:07) with
+`NRestarts=0` — each login starts a fresh user manager, so it is not a restart loop.
+Not OOM: `MemoryPeak=2.4 MB`, `Result=success`, no `ExecMainStatus`.
+
+**One human command fixes it:** `sudo -n pct exec 127 -- loginctl enable-linger rk`.
+Until then, `ssh -N rk@192.168.50.108` left open is the only thing keeping the port up.
+
+**And the CT has no logs:** `systemd-journald` is `failed`, `journalctl` says *"No
+journal files were found"*, `dmesg` is not readable by `rk`. So `journalctl --user -u
+tape-serve.service` — the debugging instrument M5 assumes — does not exist. Needs
+persistent journald (root) or the unit's own log file.
+
+### A design finding that changes T6's `audit`
+
+`--only` takes **exactly one path** (`Subset.cwd: PathBuf`, `manifest.only: Option<String>`),
+and the CT's loader is **newest manifest per host wins**. Pushing the archiver subset
+therefore *superseded* the ubdogs manifest — `manifests/` now holds
+`debra-20261101T000303Z.json`, `…T000311Z.json`, `debra-20261102T055956Z.json`, and only
+the last one is "current". Consequence: **`audit` diffing source-vs-archive from the
+newest manifest alone would report all 10 ubdogs sessions as vanished.** Either `--only`
+becomes multi-path, or `audit` must union the manifest history rather than trust the
+newest. Decide before `audit` is written, not after.
+
 ## Reusable fixtures (all under /tmp, none deleted)
 
 - `TAPE_HOME=/tmp/tape-t3-full` — 848 blobs, verified, **indexed** (current parsers).
