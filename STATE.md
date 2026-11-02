@@ -392,6 +392,36 @@ Acceptance, measured after the second reboot:
 `102,103,104,105,106,111,114` — **127 is not in it**, and `tank/tapes` is
 `backup=0`), a static DHCP lease, and the off-box copy of `identity.age`.
 
+### Whole-machine archive (2026-11-02): D9 lifted, the Claude tree is rescued
+
+`cleanupPeriodDays` is now **999999** (set 2026-11-01 22:11), so Claude's 30-day
+nuke is off — but the tree was still **single-copy on one disk**: 201 files /
+714 MiB, oldest file 2026-08-17, and exactly **one** Claude session in the archive.
+So the subset rule (D9) was lifted and the whole machine went through:
+
+| stage | measured |
+|---|---|
+| `tape scan` (no `--only`) | **856 files** — pi 296 / claude 201 / codex 359, 14 Claude subagent groups, 3 non-quiescent, **1.9 s** |
+| `tape store` | **839 new blobs in 15 s**, 2320 MiB → 869 MiB (**2.67×**), 0 failures |
+| `tape push` | **839 blobs / 866 MiB in 32 s**, verified by size 839, manifest `debra-20261102T063358Z.json` |
+| `tape-ingest.service` | **839 ingested, 0 parse failures, 0 read/decrypt fails**, 28.5 s CPU, **686 MB peak** |
+| index now | **756 sessions** (claude 102 / codex 359 / pi 295), **90,859 messages**, **55,057 tool calls**, 853 blobs |
+
+Oldest Claude session archived: `2c4617fb…` (pi-mono, 704 turns, **2026-07-18**).
+The best merge test the archive now has: `67170c0c…` (regina, 2026-08-17,
+**1551 turns, 885 subagent turns merged from separate blobs**, 38 edit diffs,
+7.4 MB page, 0.31 s).
+
+**Two consequences, both handled:**
+
+1. `deploy/tape-push.sh` no longer passes `--only`. It would have been a trap: the
+   CT takes the **newest manifest per host**, so an hourly push with `--only
+   ~/Code/ubdogs` would make a subset current again and `audit` would call 742
+   sessions vanished. Multi-path `--only` first, subsets after.
+2. **`tape-ingest.service` peaks at 686 MB** on a 1024 MB box and has no
+   `MemoryMax`. `tape-serve` is capped at 512 M; ingest is not. Worth a cap or a
+   `MemoryHigh`, otherwise a big ingest is the thing that OOMs the box.
+
 ## Reusable fixtures (all under /tmp, none deleted)
 
 - `TAPE_HOME=/tmp/tape-t3-full` — 848 blobs, verified, **indexed** (current parsers).

@@ -90,10 +90,12 @@ the coupling between the unit, the firewall rule, and the DHCP server.
 ## The hourly push from debra — written, not installed
 
 `tape-push.sh` is what the LaunchAgent runs, **not `tape push` alone**: `push`
-only ships blobs, so `scan` and `store` have to run first. `store` takes no
-`--only` — it reads the manifest, and `scan --only` already wrote the D9 subset
-into it. macOS has no `flock(1)`, so the overlap guard in the script is a
-`pgrep`.
+only ships blobs, so `scan` and `store` have to run first. It runs a
+**whole-machine** scan — D9 (the `~/Code/ubdogs` subset) was lifted on 2026-11-02,
+and it must stay lifted: the CT takes the newest manifest per host, so a subset
+push would make a subset current again and `audit` would report everything else as
+vanished. `store` takes no `--only` at all — it reads the manifest `scan` wrote.
+macOS has no `flock(1)`, so the overlap guard in the script is a `pgrep`.
 
 ```sh
 mkdir -p ~/Library/Logs/tapes

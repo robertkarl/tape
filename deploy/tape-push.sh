@@ -9,7 +9,11 @@ set -euo pipefail
 
 TAPE=/Users/robertkarl/Code/tape-target/release/tape
 ARCHIVE=192.168.50.108
-ONLY=/Users/robertkarl/Code/ubdogs
+# D9 (the ~/Code/ubdogs subset) is LIFTED as of 2026-11-02: the archive now holds
+# the whole machine. Keep it that way. The CT takes the NEWEST manifest per host,
+# so pushing with `--only <path>` would make a subset the newest manifest and
+# every session outside it would look "vanished" to `audit`. If a subset is ever
+# wanted again, `--only` has to become multi-path first - see STATE.md.
 
 export HOME=/Users/robertkarl
 export TAPE_HOME="$HOME/.local/share/tapes"
@@ -22,7 +26,7 @@ if [ "$(pgrep -f tape-push.sh | grep -vw "$$" | wc -l | tr -d ' ')" -gt 0 ]; the
   exit 0
 fi
 
-# store takes no --only: it reads the manifest, and scan wrote the subset into it.
-"$TAPE" scan  --only "$ONLY"
+# store takes no --only: it reads the manifest that `scan` just wrote.
+"$TAPE" scan
 "$TAPE" store
-"$TAPE" push  "$ARCHIVE" --user rk --only "$ONLY"
+"$TAPE" push  "$ARCHIVE" --user rk
