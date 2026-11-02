@@ -1,0 +1,31 @@
+<!-- T6: hourly push from debra -> archive CT 127.
+     Mirrors ~/Library/LaunchAgents/net.robertkarl.regina-brain-scheduler.plist.
+     NOT INSTALLED YET - see deploy/README.md for the install/load commands.
+     Source hosts push (decision D2); the CT never reaches out. -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>            <string>net.robertkarl.tapes</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/robertkarl/Code/claude-transcript-archiver/deploy/tape-push.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/robertkarl/Code/claude-transcript-archiver</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>        <true/>
+  <key>StartInterval</key>    <integer>3600</integer>
+  <key>ProcessType</key>      <string>Background</string>
+  <key>StandardOutPath</key>  <string>/Users/robertkarl/Library/Logs/tapes/push.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/robertkarl/Library/Logs/tapes/push.err.log</string>
+</dict>
+</plist>

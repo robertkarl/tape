@@ -1,0 +1,40 @@
+# systemd USER unit for `tape serve` on archive CT 127 (runs as rk, uid 1000).
+#
+# Why a user unit: the Debian 13 standard template in CT 127 has **no sudo**, so
+# rk cannot install a system unit. User units start at boot only with lingering:
+#   pct exec 127 -- loginctl enable-linger rk      # one-time, root, from proxmox
+#
+# Install (as rk on the CT):
+#   mkdir -p ~/.config/systemd/user
+#   cp tape-serve.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now tape-serve.service
+#   journalctl --user -u tape-serve.service -f
+#
+# serve refuses 0.0.0.0 by design (decision D3: LAN plaintext, no auth), so the
+# address is written here. CT 127 is ip=dhcp — if the lease changes, this line
+# and the firewall rule both have to follow it.
+
+[Unit]
+Description=tape serve - read-only transcript archive browser
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=TAPE_HOME=/var/lib/tapes
+ExecStart=/home/rk/tape/target/release/tape serve --addr 192.168.50.108 --port 8799
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+
+# The index is opened PRAGMA query_only by the code; these are the same promise
+# at the OS level. Drop ProtectSystem if a future command needs to write elsewhere.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/tapes
+
+[Install]
+WantedBy=default.target

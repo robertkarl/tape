@@ -16,8 +16,7 @@ pushes must be fast-forward.
 | **T3 parsers + SQLCipher index + `ingest`/`stats`** | **done, merged, acceptance met** |
 | **T4 CT 127 + `push`** | **done except the firewall cut, deliberately deferred until after T5.** CT `tapes` (127) is up at 192.168.50.108 and holds the first real archive |
 | **T5 renderer port + `serve`** | **done and live on the archive host** (`http://192.168.50.108:8799`). Report: `REPORT-T5.md` |
-| **T6 launchd + `audit`** | **next.** M5: hourly push from debra, `audit` already coded, laptop over Tailscale |
-| T6 launchd + `audit` | not started, depends on T4 |
+| **T6 launchd + `audit`** | **started 2026-11-02.** `tape serve` is now a systemd **user** unit on the CT (installed, running, auto-restart proven). Push plist + `tape-push.sh` written, **not installed**. `audit` is **not** coded — `src/main.rs:284` is still `bail!("not implemented (T6)")`. Everything in `deploy/README.md` |
 
 42 tests pass (28 unit, 5 index integration, 9 store).
 
@@ -192,6 +191,8 @@ What is left of T4, in order:
    pressure; 512 MB is worth a try once the firewall work is done and the box
    is no longer being rebuilt.
 3. **T6 launchd** will make the push hourly; nothing about it is blocked.
+   `deploy/net.robertkarl.tapes.plist` + `deploy/tape-push.sh` are written and
+   `plutil`-clean; installing them is a `launchctl bootstrap` away.
 4. Cosmetic: `/var/lib/tapes/manifests/debra.json.tmp-{32367,32397,32688,32714}`
    are inert debris from the pre-fix push (they do not end in `.json`, so the
    loader ignores them). Delete only on request.
@@ -203,10 +204,10 @@ Full write-up: **`REPORT-T5.md`**. The short version:
 - `src/render/` is render_trace.py translated (template verbatim, badges,
   highlighter as a scanner with no regex crate), `src/web.rs` is axum with two
   pages. No `Cargo.toml` change.
-- **Running on the CT as `rk`:**
-  `TAPE_HOME=/var/lib/tapes setsid nohup ./target/release/tape serve --addr 192.168.50.108 --port 8799`
-  — started, verified from debra in a real browser. **It does not survive a
-  reboot**: no systemd unit yet, which belongs with M5.
+- **Ran on the CT as `rk`** via `setsid nohup … tape serve`. That died with the
+  CT's reboot (observed 2026-11-02: box up 3 h 58 m, `pgrep -x tape` → 0, port
+  8799 dead). **Superseded** by `deploy/tape-serve.service`, a systemd user unit
+  — see the T6 section below.
 - M4 acceptance measured: Claude `7bd359d5` 35 turns / 17 subagent turns marked
   / 3 edit diffs; codex `019d68e5` 930 turns / 2503 coloured patch lines; pi
   `019e5ae1` 27 turns / 12 edit diffs; the CT's own `01a1899d` over the LAN.
@@ -224,6 +225,48 @@ Two traps paid for, both worth remembering:
 - **`pkill -f "tape serve"` over ssh kills the ssh session itself** (the pattern
   matches the command line of the shell running it). Use `pkill -x tape`, or
   separate the kill and the start into different ssh calls.
+
+## T6 — started (2026-11-02): `serve` is a service now, push is written, `audit` is not
+
+**`tape serve` on CT 127 is installed as a systemd user unit**
+(`~/.config/systemd/user/tape-serve.service`, source: `deploy/tape-serve.service`).
+Measured on the CT:
+
+| check | result |
+|---|---|
+| `systemctl --user status` | `active` + `enabled`, Main PID 473, 4.6 MB |
+| `ss -ltnp` | `192.168.50.108:8799` — LAN address, **not** `0.0.0.0` |
+| `curl /` from debra | `200`, 6.8 KB, **42 ms** |
+| `kill -TERM $(pgrep -x tape)` | `activating` → `active` in ~4 s, exactly one `tape`, `curl` 200 |
+
+**Facts this uncovered, all three new:**
+
+1. **CT 127 has no `sudo` at all** (Debian 13 standard template). So `rk` can
+   only own *user* units. The one-time root step has to come from the proxmox
+   host: `sudo -n pct exec 127 -- loginctl enable-linger rk`.
+2. **`/var/lib/systemd/linger/` is empty** → no lingering → the unit starts on
+   login, not yet at boot. That is the last mile, and it is human-only.
+3. **The CT already trusts debra's default key.** `~/.ssh/authorized_keys` for
+   `rk` holds exactly `id_ed25519`
+   (`SHA256:7JOhh7Fki1cvrkNR9m7YW9mMUAqLIoKkNpaHJDcsvv4`), injected by
+   `pct create --ssh-public-key` and wrapped in `# --- BEGIN PVE ---` markers.
+   `tape push`'s default key works; no `--key` anywhere. `id_rsa` is *not* in
+   that file — it only ever mattered for the loopback test.
+
+Coupling to watch: the unit hardcodes `--addr 192.168.50.108` because `serve`
+refuses `0.0.0.0` (D3), and the CT is `ip=dhcp`. A moved lease breaks the unit
+and the firewall rule together; a static lease would remove that.
+
+**The push side is written but not installed:** `deploy/net.robertkarl.tapes.plist`
+(`plutil`-clean, hourly, logs to `~/Library/Logs/tapes/`) runs `deploy/tape-push.sh`,
+which does `scan --only` → `store` → `push`. Two API facts that broke a first
+draft: **`store` has no `--only`** (it reads the manifest, which carries the
+subset), and **macOS has no `flock(1)`**, so the overlap guard is a `pgrep`.
+
+**`audit` is not implemented.** `STATE.md` previously claimed "`audit` already
+coded" — wrong; `src/main.rs:284` is `Cmd::Audit => anyhow::bail!("not
+implemented (T6)")`. That is the remaining T6 work, and it must key on
+`(session_id, hash)`, never path (see *Paths move under us*).
 
 ## Reusable fixtures (all under /tmp, none deleted)
 
