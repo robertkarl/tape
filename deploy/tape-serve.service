@@ -1,35 +1,47 @@
-# systemd USER unit for `tape serve` on archive CT 127 (runs as rk, uid 1000).
+# SYSTEM unit for `tape serve` on archive CT 127. Installs to
+#   /etc/systemd/system/tape-serve.service
 #
-# Why a user unit: the Debian 13 standard template in CT 127 has **no sudo**, so
-# rk cannot install a system unit. User units start at boot only with lingering:
-#   pct exec 127 -- loginctl enable-linger rk      # one-time, root, from proxmox
+# A system unit, NOT a user unit. The user-unit attempt failed exactly as
+# systemd says it should: with Linger=no, user@1000.service is torn down when
+# the last login session closes, and it takes the daemon with it (measured:
+# 8799 answers 200 for ~12 s after the last logout, then 000 forever). A headless
+# box needs a unit that is not tied to anybody's login.
 #
-# Install (as rk on the CT):
-#   mkdir -p ~/.config/systemd/user
-#   cp tape-serve.service ~/.config/systemd/user/
-#   systemctl --user daemon-reload
-#   systemctl --user enable --now tape-serve.service
-#   journalctl --user -u tape-serve.service -f
-#
-# serve refuses 0.0.0.0 by design (decision D3: LAN plaintext, no auth), so the
-# address is written here. CT 127 is ip=dhcp — if the lease changes, this line
-# and the firewall rule both have to follow it.
+# Install: cp to /etc/systemd/system/, then
+#   systemctl daemon-reload && systemctl enable --now tape-serve.service
 
 [Unit]
 Description=tape serve - read-only transcript archive browser
 After=network-online.target
 Wants=network-online.target
+# Restart=always below is pointless once the start-limit trips; this unit is
+# meant to retry forever.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+User=rk
+Group=rk
 Environment=TAPE_HOME=/var/lib/tapes
 ExecStart=/home/rk/tape/target/release/tape serve --addr 192.168.50.108 --port 8799
+# On boot this unit can beat DHCP, and the bind then fails with
+# "Cannot assign requested address (os error 99)" (measured on the 2026-11-02
+# reboot; Restart=always healed it in 5 s). Wait for an address instead of
+# relying on the retry - network-online.target alone does not cover DHCP inside
+# an LXC guest.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 60); do ip -4 -o addr show eth0 | grep -q "inet " && exit 0; sleep 1; done; exit 1'
 Restart=always
 RestartSec=5
 TimeoutStopSec=15
 
+# 2 GB swap on a 1024 MB CT; a session page is generated in memory, so cap it
+# and let systemd restart the process rather than let it eat the box.
+# (The real fix is server-side turn paging - see the 45 MB page note in STATE.md.)
+MemoryMax=512M
+
 # The index is opened PRAGMA query_only by the code; these are the same promise
-# at the OS level. Drop ProtectSystem if a future command needs to write elsewhere.
+# at the OS level. ProtectHome=read-only is safe only because the binary lives
+# in /home/rk/tape and serve writes nothing there.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
@@ -37,4 +49,4 @@ ProtectHome=read-only
 ReadWritePaths=/var/lib/tapes
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

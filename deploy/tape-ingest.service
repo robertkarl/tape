@@ -1,0 +1,18 @@
+# Index what `tape push` delivered. Driven by tape-ingest.timer, not by a human
+# ssh'ing in. Source machines push (D2); nothing on the CT reaches out.
+[Unit]
+Description=tape ingest - index newly pushed blobs into the SQLCipher index
+
+[Service]
+Type=oneshot
+User=rk
+Group=rk
+Environment=TAPE_HOME=/var/lib/tapes
+ExecStart=/home/rk/tape/target/release/tape ingest
+# Manifests are history and never truncated, so this only ever adds rows;
+# already-indexed blobs are skipped by hash. Safe to run on a fixed schedule.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/tapes

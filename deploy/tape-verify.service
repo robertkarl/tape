@@ -1,0 +1,17 @@
+# Bit-rot check: decrypt and re-hash every blob and compare against the
+# content address. This is the whole point of a content-addressed store, and it
+# is worth running whether or not anything changed.
+[Unit]
+Description=tape verify - decrypt and re-hash every stored blob
+
+[Service]
+Type=oneshot
+User=rk
+Group=rk
+Environment=TAPE_HOME=/var/lib/tapes
+ExecStart=/home/rk/tape/target/release/tape verify
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/tapes

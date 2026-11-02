@@ -16,7 +16,7 @@ pushes must be fast-forward.
 | **T3 parsers + SQLCipher index + `ingest`/`stats`** | **done, merged, acceptance met** |
 | **T4 CT 127 + `push`** | **done except the firewall cut, deliberately deferred until after T5.** CT `tapes` (127) is up at 192.168.50.108 and holds the first real archive |
 | **T5 renderer port + `serve`** | **done and live on the archive host** (`http://192.168.50.108:8799`). Report: `REPORT-T5.md` |
-| **T6 launchd + `audit`** | **started 2026-11-02.** `tape serve` is now a systemd **user** unit on the CT (installed, running, auto-restart proven). Push plist + `tape-push.sh` written, **not installed**. `audit` is **not** coded — `src/main.rs:284` is still `bail!("not implemented (T6)")`. Everything in `deploy/README.md` |
+| **T6 launchd + `audit`** | **CT side done 2026-11-02:** `tape serve` is a **system unit**, `ingest` + `verify` are on timers, journald is fixed, `sudo` is installed, two reboots verified. Push plist + `tape-push.sh` written, **not installed**. `audit` is **not** coded — `src/main.rs:284` is still `bail!("not implemented (T6)")`. Everything in `deploy/README.md` |
 
 42 tests pass (28 unit, 5 index integration, 9 store).
 
@@ -228,6 +228,11 @@ Two traps paid for, both worth remembering:
 
 ## T6 — started (2026-11-02): `serve` is a service now, push is written, `audit` is not
 
+> **This first attempt (a systemd *user* unit) was superseded the same day.**
+> See "CT hardening" below: `serve` is a **system** unit now, the user unit was
+> moved to `/home/rk/systemd-user-retired/`, and two reboots were verified.
+> The findings in this subsection are kept because they explain why.
+
 **`tape serve` on CT 127 is installed as a systemd user unit**
 (`~/.config/systemd/user/tape-serve.service`, source: `deploy/tape-serve.service`).
 Measured on the CT:
@@ -244,8 +249,13 @@ Measured on the CT:
 1. **CT 127 has no `sudo` at all** (Debian 13 standard template). So `rk` can
    only own *user* units. The one-time root step has to come from the proxmox
    host: `sudo -n pct exec 127 -- loginctl enable-linger rk`.
+   *Fixed the same day — and the premise was wrong:* **root SSH into the CT
+   works directly** (debra's key is in the CT's `authorized_keys` for root too,
+   from `pct create --ssh-public-key`), so no proxmox hop was needed at all.
 2. **`/var/lib/systemd/linger/` is empty** → no lingering → the unit starts on
    login, not yet at boot. That is the last mile, and it is human-only.
+   *Fixed the same day, differently:* user units were the wrong shape for a
+   headless box; a **system unit** removes the linger question entirely.
 3. **The CT already trusts debra's default key.** `~/.ssh/authorized_keys` for
    `rk` holds exactly `id_ed25519`
    (`SHA256:7JOhh7Fki1cvrkNR9m7YW9mMUAqLIoKkNpaHJDcsvv4`), injected by
@@ -327,6 +337,60 @@ the last one is "current". Consequence: **`audit` diffing source-vs-archive from
 newest manifest alone would report all 10 ubdogs sessions as vanished.** Either `--only`
 becomes multi-path, or `audit` must union the manifest history rather than trust the
 newest. Decide before `audit` is written, not after.
+
+### CT hardening (2026-11-02, agent-owned container over direct SSH)
+
+Operating rule now: **the agent owns CT 127 and works on it over direct SSH**
+(`root@192.168.50.108` key auth works; `rk` has `NOPASSWD` sudo); **the proxmox
+host is checked with the human first.** No `pct exec` was needed for any of this.
+
+Installed, from `deploy/` (source of truth stays in git):
+
+| unit | what it does |
+|---|---|
+| `tape-serve.service` | system unit, `User=rk`, `Restart=always`, `MemoryMax=512M`, `ProtectSystem=strict` + `ReadWritePaths=/var/lib/tapes`, `StartLimitIntervalSec=0` |
+| `tape-ingest.service` + `.timer` | `tape ingest` 2 min after boot, then every 15 min (`Persistent=true`) |
+| `tape-verify.service` + `.timer` | `tape verify` (decrypt + re-hash every blob) weekly, Sunday ~04:30 |
+
+What was done to the container, in order:
+
+1. **`sudo` installed** + `/etc/sudoers.d/rk` = `NOPASSWD:ALL`, `visudo -cf` parsed OK.
+   CT 127 had skipped the bootstrap in `~/homelab/docs/ADDING-A-NEW-SERVICE.md:49-53`;
+   that omission is what made every root action need a proxmox round trip.
+2. **Egress was already open** — `deb.debian.org` 200 in 0.13 s, and
+   `/etc/pve/firewall/127.fw` **does not exist**, so no firewall change was
+   needed for `apt-get`. The egress cut is still unwritten (proxmox side, human).
+3. **journald fixed.** It failed at every boot with `status=243/CREDENTIALS`:
+   Debian 13's `systemd-journald.service` has `ImportCredential=journal.*`, and an
+   unprivileged LXC has no credentials dir. Drop-in
+   `/etc/systemd/system/systemd-journald.service.d/no-creds.conf` with
+   `[Service]` / `ImportCredential=` clears it; `Storage=persistent` set. Verified:
+   `journalctl` now returns the units' own output. **The `failed` state after the
+   fix was the start-limit (5 starts / 10 s), not the bug** — `reset-failed` first.
+4. **User unit retired** (moved to `/home/rk/systemd-user-retired/`, not deleted),
+   system units enabled.
+5. **Boot race found and removed.** First reboot: `serve` failed once with
+   `binding 192.168.50.108:8799 … Cannot assign requested address (os error 99)`
+   — it started before DHCP assigned the address, and `Restart=always` healed it
+   in 5 s. `network-online.target` does **not** cover DHCP inside an LXC guest.
+   Added `ExecStartPre` waiting up to 60 s for an `inet` on `eth0`; second reboot
+   is clean (`NRestarts=0`).
+
+Acceptance, measured after the second reboot:
+
+| check | result |
+|---|---|
+| `curl /` from debra, no session held | **200 at +10 s and every 10 s to +80 s** |
+| `systemctl is-active tape-serve tape-ingest.timer tape-verify.timer systemd-journald` | all `active` |
+| `NRestarts` after clean boot | **0** |
+| ingest timer firing unprompted | fired at boot+2 min: `ingested: 0, already indexed: 4` |
+| index across two reboots | **14 sessions / 1489 turns**, `blobs 14` |
+| session page over the LAN | 200, 3.2 MB, 0.11 s |
+
+**Still open, proxmox side (human):** the `127.fw` rules, ZFS snapshots of
+`tank/tapes` (**zero snapshots exist**; the vzdump job covers
+`102,103,104,105,106,111,114` — **127 is not in it**, and `tank/tapes` is
+`backup=0`), a static DHCP lease, and the off-box copy of `identity.age`.
 
 ## Reusable fixtures (all under /tmp, none deleted)
 

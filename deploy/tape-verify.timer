@@ -1,0 +1,11 @@
+# Weekly. A failure here means disk rot or a tampered blob, not a bug in push.
+[Unit]
+Description=Run tape verify weekly
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+RandomizedDelaySec=45min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
